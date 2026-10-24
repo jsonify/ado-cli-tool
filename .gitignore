@@ -1,0 +1,46 @@
+# --- Secrets: never commit tokens or signing material ---
+# ado_cli.py reads ADO_TOKEN and friends from .env (in the working directory or the repo root).
+.env
+.env.*
+!.env.example
+# Developer ID certificates and App Store Connect API keys used by macos/Scripts/release.sh.
+*.p12
+*.p8
+*.cer
+*.keychain-db
+
+# --- Engine output ---
+# Default location of export-closed-stories (relative to where ado_cli.py runs).
+data/
+
+# --- Research output ---
+# Default location of research-related files.
+research/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- macOS app (SwiftPM) ---
+# SwiftPM build cache, and the app/release output of macos/Scripts/build_app.sh and release.sh.
+macos/.build/
+macos/build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+*.app
+*.dmg
+
+# --- OS / editors ---
+.DS_Store
+.AppleDouble
+._*
+.vscode/
+.idea/
+*.swp

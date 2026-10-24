@@ -24,12 +24,25 @@ ADO Desk is a native SwiftUI app. It runs `ado_cli.py` in the background and sho
 
 ```bash
 cd macos
-swift run                # development: uses ../ado_cli.py from this checkout
-./build-app.sh           # builds macos/build/ADO Desk.app with ado_cli.py bundled
-open "build/ADO Desk.app"
+swift run                     # development: uses ../ado_cli.py from this checkout
+Scripts/make_dev_cert.sh      # once: stable signing certificate (see below)
+Scripts/build_app.sh --run    # builds macos/build/ADO Desk.app with ado_cli.py bundled, then opens it
 ```
 
 To work in Xcode, open `macos/Package.swift` and run the `ADODesk` scheme.
+
+## Build and release
+
+| Script | What it does |
+| --- | --- |
+| `Scripts/build_app.sh [--run]` | Builds `build/ADO Desk.app`. `ADODESK_STRICT=1` makes warnings errors (CI does this). `ADODESK_VERSION` sets the marketing version, and the build number is the short commit hash. `CONFIG=debug` builds a debug binary. |
+| `Scripts/make_dev_cert.sh` | Creates a self-signed **ADO Desk Dev** certificate, used automatically by `build_app.sh`. Without it, builds are signed ad-hoc and the app's identity changes on every build, so macOS asks again for access to the token in the Keychain. Override with `ADODESK_SIGN_IDENTITY`. |
+| `Scripts/release.sh` | Signs with a Developer ID (hardened runtime, `Resources/ADODesk.entitlements`), notarizes, staples, and writes `ADO-Desk-<version>.dmg`, `.zip` and `SHA256SUMS` to `build/release/`. Run `Scripts/release.sh --help` for the credentials it needs. `--skip-notarize` signs and packages only. |
+
+CI (`.github/workflows/`):
+
+- **Build** runs on every push to `main` and on pull requests. It checks that `ado_cli.py` compiles and starts, builds the app with warnings as errors on the newest Xcode, and uploads `ADO Desk.app` as an artifact.
+- **Release** runs when a `v*` tag is pushed (`git tag v0.2.0 && git push origin v0.2.0`). It runs `release.sh` and attaches the DMG and zip to a draft GitHub release. The repository secrets it needs are listed at the top of `release.yml`.
 
 ## Configure
 
@@ -50,4 +63,4 @@ The app passes a variable to the engine only when its field is filled in. If you
 
 For each command's flags, `result` shape, error codes and quirks, see [`docs/ENGINE_REFERENCE.md`](../docs/ENGINE_REFERENCE.md).
 
-The `.app` contains a copy of `ado_cli.py` taken at build time. If you change the script, re-run `./build-app.sh`, or set **Engine → Script** to the file in your checkout so the app always uses the current version.
+The `.app` contains a copy of `ado_cli.py` taken at build time. If you change the script, re-run `Scripts/build_app.sh`, or set **Engine → Script** to the file in your checkout so the app always uses the current version.

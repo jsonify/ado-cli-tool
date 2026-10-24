@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the Developer ID (hardened runtime) build made by Scripts/release.sh.
+  ADO Desk is not sandboxed, so outgoing network, its own Keychain item and launching python3
+  need no entitlement. The python3 child runs under its own signature, not these entitlements.
+  Add keys here only if the hardened runtime starts blocking something the app needs.
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

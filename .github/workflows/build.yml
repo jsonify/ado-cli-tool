@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer run for the same branch replaces any older one still queued or running.
+concurrency:
+  group: build-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: macos
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Use the newest Xcode on the runner: newer compilers add warnings the default one doesn't report.
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          # Versioned bundles only: the plain Xcode.app is the runner's default, which sorts last.
+          NEWEST=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEWEST"
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+          python3 --version
+      # The app bundles ado_cli.py, so a script that doesn't compile or start is a broken build.
+      - name: Engine check
+        run: |
+          python3 -m py_compile ../ado_cli.py
+          python3 ../ado_cli.py --help > /dev/null
+      - name: Build app (warnings are errors)
+        run: ./Scripts/build_app.sh
+        env:
+          ADODESK_STRICT: "1"
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ADO Desk.app
+          path: macos/build/ADO Desk.app

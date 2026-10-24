@@ -134,4 +134,4 @@ Notes:
 2. Add a subparser in `build_parser()`. Use `dest=` with snake_case names.
 3. Add an `elif` branch in `main()`.
 4. On the app side, add a `Decodable` model in `Models.swift` that matches `result`. Then call `cli.run([...], as: Model.self)` with `--flag=value` arguments.
-5. Rebuild the `.app` (`macos/build-app.sh`) so the bundled copy of the engine includes the change.
+5. Rebuild the `.app` (`macos/Scripts/build_app.sh`) so the bundled copy of the engine includes the change.
