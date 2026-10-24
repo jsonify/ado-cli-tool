@@ -31,6 +31,11 @@ ALLOWED_URL_SCHEMES = ("https",)
 
 @dataclass
 class Config:
+    """Connection settings and defaults resolved from the environment by load_config().
+
+    The token is excluded from repr() so it never appears in logs or tracebacks.
+    Optional fields are empty strings (never None) when unset.
+    """
     token: str = field(repr=False)
     org: str
     project: str
@@ -42,6 +47,10 @@ class Config:
 
 
 def utc_timestamp() -> str:
+    """Return the current UTC time as an ISO 8601 string with a +00:00 offset.
+
+    Used for the "timestamp" field of every JSON envelope.
+    """
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
@@ -141,6 +150,16 @@ def format_description_html(text: str) -> str:
 
 
 def envelope_success(command: str, cfg: Config, result: Any) -> dict[str, Any]:
+    """Build the success envelope printed to stdout for a completed command.
+
+    Args:
+        command: Subcommand name (e.g. "create").
+        cfg: Active configuration; supplies "organization" and "project".
+        result: Command-specific payload returned by a cmd_* function.
+
+    Returns:
+        {"success": True, "command", "timestamp", "organization", "project", "result"}
+    """
     return {
         "success": True,
         "command": command,
@@ -152,6 +171,19 @@ def envelope_success(command: str, cfg: Config, result: Any) -> dict[str, Any]:
 
 
 def envelope_error(command: str, cfg: Config | None, code: str, message: str) -> dict[str, Any]:
+    """Build the failure envelope printed to stdout when a command fails.
+
+    Args:
+        command: Subcommand name.
+        cfg: Active configuration, or None when config loading itself failed
+            (organization and project are then null).
+        code: Machine-readable error code (see map_api_error and CliError).
+        message: Human-readable error message.
+
+    Returns:
+        {"success": False, "command", "timestamp", "organization", "project",
+        "error": {"code", "message"}}
+    """
     return {
         "success": False,
         "command": command,
@@ -192,10 +224,23 @@ def format_acceptance_criteria(criteria: list[str] | None) -> str:
 
 
 def print_json(data: dict[str, Any]) -> None:
+    """Write a dict to stdout as pretty-printed JSON (2-space indent, key order preserved).
+
+    This is the only stdout output the CLI produces on a handled path.
+    """
     print(json.dumps(data, indent=2, sort_keys=False))
 
 
 def normalize_org(raw_org: str) -> str:
+    """Turn ADO_ORG into a full organization base URL with no trailing slash.
+
+    Accepts either an https:// URL (returned as-is minus the trailing slash) or a
+    bare organization name, which becomes https://dev.azure.com/<name>.
+
+    Raises:
+        ValueError: The value uses another scheme (http://, file://, ...), starts
+            with "/", or is an https URL without a host.
+    """
     raw_org = raw_org.strip()
     if raw_org.startswith("https://"):
         parsed = urllib.parse.urlparse(raw_org)
@@ -209,6 +254,13 @@ def normalize_org(raw_org: str) -> str:
 
 
 def require_env(primary: str, fallback: str | None = None) -> str:
+    """Return a non-empty environment variable, trying an optional fallback name.
+
+    Currently unused; load_config() uses require_env_any().
+
+    Raises:
+        ValueError: Neither variable is set to a non-blank value.
+    """
     value = os.getenv(primary, "").strip()
     if value:
         return value
@@ -220,6 +272,13 @@ def require_env(primary: str, fallback: str | None = None) -> str:
 
 
 def require_env_any(*names: str) -> str:
+    """Return the first non-blank value among the given environment variable names.
+
+    Values are stripped of surrounding whitespace.
+
+    Raises:
+        ValueError: None of the variables is set to a non-blank value.
+    """
     for name in names:
         value = os.getenv(name, "").strip()
         if value:
@@ -228,13 +287,23 @@ def require_env_any(*names: str) -> str:
 
 
 def _strip_optional_quotes(value: str) -> str:
+    """Remove one pair of matching surrounding single or double quotes from a .env value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
         return value[1:-1]
     return value
 
 
 def load_dotenv_defaults() -> None:
-    """Load .env values without overwriting already-exported environment variables."""
+    """Load .env values without overwriting already-exported environment variables.
+
+    File selection: if ADO_ENV_FILE is set, only that file is considered (a missing
+    file is silently ignored). Otherwise the first existing file among
+    ./.env (current working directory) and <script dir>/../.env is used.
+
+    Parsing: blank lines and lines starting with "#" are skipped, an optional
+    leading "export " is removed, and one pair of surrounding quotes is stripped.
+    Inline comments and escape sequences are not processed.
+    """
     explicit_env = os.getenv("ADO_ENV_FILE", "").strip()
     candidates: list[Path] = []
 
@@ -268,6 +337,18 @@ def load_dotenv_defaults() -> None:
 
 
 def load_config() -> Config:
+    """Build a Config from the environment, after applying .env defaults.
+
+    Required (first non-blank name wins):
+        token:   ADO_TOKEN, AZURE_DEVOPS_PAT, ADO_PAT
+        org:     ADO_ORG, AZURE_DEVOPS_ORG (normalized by normalize_org)
+        project: ADO_PROJECT, AZURE_DEVOPS_PROJECT
+    Optional: ADO_TEAM, ADO_ASSIGNEE, ADO_AREA_PATH, ADO_ITERATION_PATH, SSL_CERT_FILE.
+
+    Raises:
+        ValueError: A required variable is missing or ADO_ORG is invalid. main()
+            reports this as CONFIG_ERROR before any command runs.
+    """
     load_dotenv_defaults()
 
     token = require_env_any("ADO_TOKEN", "AZURE_DEVOPS_PAT", "ADO_PAT")
@@ -292,7 +373,19 @@ def load_config() -> Config:
 
 
 class AdoClient:
+    """Minimal Azure DevOps REST client built on urllib (standard library only).
+
+    Project-scoped calls go through request(); team-scoped calls (team settings,
+    iterations) go through team_request(). Both return parsed JSON or raise
+    AdoApiError.
+    """
     def __init__(self, cfg: Config) -> None:
+        """Prepare the project base URL, the Basic auth header and the TLS context.
+
+        The PAT is sent as Basic auth with an empty user name. SSL_CERT_FILE is used as
+        the CA bundle only if the path exists; otherwise the system defaults are used
+        without warning.
+        """
         self.cfg = cfg
         project_encoded = urllib.parse.quote(cfg.project, safe="")
         self.base_url = f"{cfg.org}/{project_encoded}/_apis"
@@ -305,7 +398,20 @@ class AdoClient:
         )
 
     def _dispatch(self, method: str, url: str, payload: Any = None, content_type: str | None = None) -> Any:
-        """Low-level HTTP dispatch. Validates the URL scheme and executes the request."""
+        """Send one HTTP request and return the parsed JSON response.
+
+        Only https URLs with a host are allowed (CWE-939). A non-None payload is
+        JSON-encoded and sent with content_type (default "application/json"). The
+        timeout is 60 seconds.
+
+        Returns:
+            The decoded JSON body, or {} for an empty body.
+
+        Raises:
+            AdoApiError: Non-https URL (status None); HTTP status >= 400 (message taken
+                from the ADO "message" field when present); a non-JSON success body;
+                or a network error or timeout (status None).
+        """
         # Enforce scheme allowlist (https only) to prevent file://, http://, ftp://, etc. (CWE-939)
         parsed_url = urllib.parse.urlparse(url)
         if parsed_url.scheme not in ALLOWED_URL_SCHEMES or not parsed_url.netloc:
@@ -359,11 +465,27 @@ class AdoClient:
             raise AdoApiError(status=None, message=str(exc.reason if isinstance(exc, urllib.error.URLError) else exc)) from exc
 
     def request(self, method: str, path: str, payload: Any = None, content_type: str | None = None) -> Any:
+        """Call a project-scoped endpoint: {org}/{project}/_apis/{path}.
+
+        Args:
+            method: HTTP verb.
+            path: Path relative to _apis, including the query string (api-version etc.).
+            payload: Optional JSON-serializable body.
+            content_type: Body content type, e.g. "application/json-patch+json".
+        """
         url = f"{self.base_url}/{path.lstrip('/')}"
         return self._dispatch(method, url, payload, content_type)
 
     def team_request(self, method: str, path: str, team: str | None = None, payload: Any = None, content_type: str | None = None) -> Any:
-        """Issue a request against the team-scoped work API (teamsettings, iterations, etc.)."""
+        """Issue a request against the team-scoped work API (teamsettings, iterations, etc.).
+
+        URL: {org}/{project}/{team}/_apis/{path}. The team is the explicit argument,
+        falling back to ADO_TEAM.
+
+        Raises:
+            CliError: CONFIG_ERROR when no team is available.
+            AdoApiError: As in _dispatch.
+        """
         resolved_team = team or self.cfg.team
         if not resolved_team:
             raise CliError("CONFIG_ERROR", "ADO_TEAM environment variable is required for iteration commands (or pass --team)")
@@ -375,6 +497,12 @@ class AdoClient:
 
 
 class AdoApiError(Exception):
+    """An HTTP, network or response-format failure from Azure DevOps.
+
+    Attributes:
+        status: HTTP status code, or None for non-HTTP failures.
+        message: Error text (the ADO "message" field when available).
+    """
     def __init__(self, status: int | None, message: str) -> None:
         self.status = status
         self.message = message
@@ -382,6 +510,11 @@ class AdoApiError(Exception):
 
 
 class CliError(Exception):
+    """A failure detected by the CLI itself, carrying the envelope error code.
+
+    Codes raised in this module: VALIDATION_ERROR, CONFIG_ERROR, API_ERROR,
+    NO_ITERATION_MATCH.
+    """
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         self.message = message
@@ -389,6 +522,11 @@ class CliError(Exception):
 
 
 def map_api_error(err: AdoApiError) -> tuple[str, str]:
+    """Map an AdoApiError to an envelope (code, message) pair.
+
+    401/403 -> AUTH_ERROR, 404 -> STORY_NOT_FOUND (for every endpoint, including
+    iterations), 400 -> VALIDATION_ERROR, anything else -> API_ERROR.
+    """
     if err.status in (401, 403):
         return ("AUTH_ERROR", err.message)
     if err.status == 404:
@@ -399,15 +537,24 @@ def map_api_error(err: AdoApiError) -> tuple[str, str]:
 
 
 def build_work_item_url(cfg: Config, item_id: int | str) -> str:
+    """Return the browser URL for a work item: {org}/{project}/_workitems/edit/{id}."""
     project_encoded = urllib.parse.quote(cfg.project, safe="")
     return f"{cfg.org}/{project_encoded}/_workitems/edit/{item_id}"
 
 
 def _escape_wiql_literal(value: str) -> str:
+    """Escape a value for use inside a single-quoted WIQL string by doubling single quotes."""
     return value.replace("'", "''")
 
 
 def _validate_date(value: str, *, flag: str) -> str:
+    """Check a YYYY-MM-DD date argument and return it zero-padded.
+
+    strptime accepts unpadded parts, so "2025-1-5" becomes "2025-01-05".
+
+    Raises:
+        CliError: VALIDATION_ERROR naming the offending --<flag>.
+    """
     try:
         parsed = dt.datetime.strptime(value, "%Y-%m-%d")
     except ValueError as exc:
@@ -416,14 +563,21 @@ def _validate_date(value: str, *, flag: str) -> str:
 
 
 def _validate_from_date(from_date: str) -> str:
+    """Validate --from-date (see _validate_date)."""
     return _validate_date(from_date, flag="from-date")
 
 
 def _validate_to_date(to_date: str) -> str:
+    """Validate --to-date (see _validate_date)."""
     return _validate_date(to_date, flag="to-date")
 
 
 def _sanitize_rich_text(value: Any) -> str:
+    """Flatten an ADO rich-text field to plain text.
+
+    Tags are replaced with spaces, HTML entities are unescaped and whitespace is
+    collapsed. None becomes "".
+    """
     if value is None:
         return ""
     text = str(value)
@@ -439,6 +593,13 @@ def _build_closed_stories_wiql(
     from_date_iso: str,
     to_date_iso: str | None,
 ) -> str:
+    """Build the WIQL query for export-closed-stories.
+
+    Selects ids in the project with the given work item type and any of the states,
+    whose ClosedDate is >= from_date_iso and, if given, <= to_date_iso, newest
+    first. The caller passes the day after --to-date as to_date_iso so that the
+    end date is inclusive.
+    """
     escaped_states = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in states)
     escaped_type = _escape_wiql_literal(work_item_type)
     escaped_project = _escape_wiql_literal(project)
@@ -457,6 +618,14 @@ def _build_closed_stories_wiql(
     return wiql
 
 def _assignee_matches(expected: str, actual: str | None) -> bool:
+    """Loosely compare a person's name against an identity display name.
+
+    After collapsing whitespace and case-folding, it matches when the strings are
+    equal, when both split into the same set of alphanumeric tokens ("Doe, Jane"
+    equals "Jane Doe"), or when expected has at least 2 tokens and all of them
+    appear in actual. Tokens are split on anything outside [a-z0-9], so non-ASCII
+    letters act as separators. Returns False if either side is empty.
+    """
     if not actual:
         return False
 
@@ -475,10 +644,38 @@ def _assignee_matches(expected: str, actual: str | None) -> bool:
 
 
 def _chunked(values: list[int], size: int) -> list[list[int]]:
+    """Split a list into consecutive slices of at most size items.
+
+    Used to stay within the 200-id limit of the workitemsbatch API.
+    """
     return [values[i : i + size] for i in range(0, len(values), size)]
 
 
 def cmd_create(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Create a work item (command: create).
+
+    POST wit/workitems/${type} as a JSON Patch. Always sets Title, Description
+    (Markdown converted by format_description_html; "" when omitted) and
+    WorkItemType. AreaPath and IterationPath fall back to ADO_AREA_PATH and
+    ADO_ITERATION_PATH when the flag is omitted; passing an empty value skips the
+    field. --parent-id adds a Hierarchy-Reverse (child -> parent) link. --ac values
+    become an HTML list in AcceptanceCriteria. --secondary-assignee writes
+    Custom.SecondaryAssignee, which must exist in the process template or ADO
+    returns 400.
+
+    Args:
+        args: title, type, description, acceptance_criteria, area_path,
+            iteration_path, parent_id, assigned_to, secondary_assignee.
+        client: Authenticated AdoClient.
+
+    Returns:
+        {"id", "title", "state", "parentId", "assignedTo", "secondaryAssignee",
+        "url"}. assignedTo and secondaryAssignee are whatever ADO returns (usually
+        an identity object), and url is the browser URL.
+
+    Raises:
+        CliError: API_ERROR if the response has no id.
+    """
     description_html = format_description_html(args.description)
     ops: list[dict[str, Any]] = [
         {"op": "add", "path": "/fields/System.Title", "value": args.title},
@@ -539,6 +736,15 @@ def cmd_create(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
 
 
 def cmd_get(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Fetch one work item with all fields (command: get).
+
+    GET wit/workitems/{id}?$expand=all.
+
+    Returns:
+        {"id", "title", "state", "assignedTo", "url", "fields"}. url is the REST
+        API URL returned by ADO, not the browser URL. fields is the raw ADO field
+        map. Relations are fetched but not included in the result.
+    """
     path = f"wit/workitems/{args.id}?$expand=all&api-version={API_VERSION}"
     data = client.request("GET", path)
     fields = data.get("fields", {})
@@ -553,6 +759,27 @@ def cmd_get(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
 
 
 def cmd_update(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Update fields on a work item (command: update).
+
+    PATCH wit/workitems/{id} with one JSON Patch "add" op (which replaces the
+    value) for each flag that is not None. An explicit empty string is sent as
+    an empty value. Description is converted from Markdown; --ac replaces the
+    whole AcceptanceCriteria list; --add-comment writes System.History, so it
+    shows up in the work item's Discussion.
+
+    Args:
+        args: id plus any of title, state, assigned_to, secondary_assignee,
+            description, acceptance_criteria, add_comment, priority (int),
+            story_points (float).
+        client: Authenticated AdoClient.
+
+    Returns:
+        {"id", "title", "state", "url", "updatedFieldsCount"}. url is the browser
+        URL, and updatedFieldsCount is the number of patch ops sent.
+
+    Raises:
+        CliError: VALIDATION_ERROR when no update flags are given.
+    """
     ops: list[dict[str, Any]] = []
 
     def add_field(path: str, value: Any) -> None:
@@ -593,6 +820,14 @@ def cmd_update(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
 
 
 def cmd_delete(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Delete a work item (command: delete).
+
+    DELETE wit/workitems/{id} without destroy=true, so the item goes to the
+    Recycle Bin and can be restored.
+
+    Returns:
+        {"id", "deleted": True, "response"}. response is the raw ADO response.
+    """
     path = f"wit/workitems/{args.id}?api-version={API_VERSION}"
     data = client.request("DELETE", path)
     return {
@@ -603,6 +838,18 @@ def cmd_delete(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
 
 
 def cmd_comment(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Add a comment to a work item (command: comment).
+
+    POST wit/workItems/{id}/comments (api-version 7.1-preview.3). --body-file,
+    when given, replaces --body. The text is sent unchanged: ADO renders it as
+    HTML and does not convert Markdown.
+
+    Returns:
+        {"id", "commentId"}.
+
+    Raises:
+        CliError: VALIDATION_ERROR when the body is empty.
+    """
     body = args.body
     if args.body_file:
         with open(args.body_file, "r", encoding="utf-8") as f:
@@ -620,6 +867,29 @@ def cmd_comment(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
     }
 
 def cmd_iteration_pick(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    r"""Pick the current or next monthly iteration under a path prefix (command: iteration-pick).
+
+    Reads the project iteration tree (classificationnodes/iterations, $depth=4)
+    and builds backslash-separated paths starting with the root node's name
+    (normally the project name). Despite the flag name, --area-path is matched as
+    a prefix of these iteration paths, not of area paths.
+
+    Selection:
+      1. Keep paths ending in "\FY##\<Month> <YYYY>" (full English month name).
+      2. Work out the fiscal year of the reference date (--on, or today). The year
+         starts in September: Sep 2025 to Aug 2026 is FY26. Keep only paths
+         containing that label, or all candidates if none match.
+      3. Return the earliest iteration whose month is on or after the reference
+         month, or the latest one if all are in the past.
+
+    Returns:
+        {"path", "name" (e.g. "October 2025"), "fiscalYear" (e.g. "FY26")}.
+
+    Raises:
+        CliError: VALIDATION_ERROR for a blank --area-path; NO_ITERATION_MATCH when
+            nothing under the prefix or nothing in the expected format is found.
+            A malformed --on is not validated, so it surfaces as API_ERROR.
+    """
     import re
     from datetime import datetime
 
@@ -685,6 +955,20 @@ def cmd_iteration_pick(args: argparse.Namespace, client: AdoClient) -> dict[str,
     }
 
 def cmd_iteration_list(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """List the iterations selected for a team (command: iteration-list).
+
+    GET {team}/_apis/work/teamsettings/iterations, optionally with
+    $timeframe=current|past|future. Only iterations the team has subscribed to are
+    returned, not the whole project tree.
+
+    Returns:
+        {"count", "iterations": [{"id", "name", "path", "startDate", "finishDate",
+        "timeFrame"}]}. id is the iteration GUID used by iteration-get. Dates are
+        ISO strings or null.
+
+    Raises:
+        CliError: CONFIG_ERROR when neither --team nor ADO_TEAM is set.
+    """
     team = getattr(args, "team", None) or None
     path = f"work/teamsettings/iterations?api-version={ITERATION_API_VERSION}"
     if getattr(args, "timeframe", None):
@@ -708,6 +992,18 @@ def cmd_iteration_list(args: argparse.Namespace, client: AdoClient) -> dict[str,
 
 
 def cmd_iteration_get(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Fetch one team iteration by GUID (command: iteration-get).
+
+    GET {team}/_apis/work/teamsettings/iterations/{id}.
+
+    Returns:
+        {"id", "name", "path", "startDate", "finishDate", "timeFrame", "goalText",
+        "raw"}. goalText is read from attributes.goalText and is null when ADO does
+        not return it. raw is the full ADO response.
+
+    Raises:
+        CliError: CONFIG_ERROR when no team is available.
+    """
     team = getattr(args, "team", None) or None
     path = f"work/teamsettings/iterations/{args.id}?api-version={ITERATION_API_VERSION}"
     data = client.team_request("GET", path, team=team)
@@ -725,6 +1021,19 @@ def cmd_iteration_get(args: argparse.Namespace, client: AdoClient) -> dict[str, 
 
 
 def cmd_iteration_update_goal(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Set the sprint goal text of a team iteration (command: iteration-update-goal).
+
+    PATCH {team}/_apis/work/teamsettings/iterations/{id} with
+    {"attributes": {"goalText": ...}}. --goal-file, when given, replaces --goal,
+    and its contents are stripped. An empty --goal= is allowed and clears the goal.
+
+    Returns:
+        {"id", "name", "goalText"} as returned by ADO.
+
+    Raises:
+        CliError: VALIDATION_ERROR when neither flag is given; CONFIG_ERROR when no
+            team is available.
+    """
     team = getattr(args, "team", None) or None
 
     goal_text = args.goal
@@ -747,6 +1056,11 @@ def cmd_iteration_update_goal(args: argparse.Namespace, client: AdoClient) -> di
 
 
 def _normalize_identity_name(value: Any) -> str | None:
+    """Reduce an ADO identity field to a display string.
+
+    Identity objects return displayName, falling back to uniqueName. Strings are
+    returned as-is. Anything else returns None.
+    """
     if isinstance(value, dict):
         return value.get("displayName") or value.get("uniqueName")
     if isinstance(value, str):
@@ -755,6 +1069,23 @@ def _normalize_identity_name(value: Any) -> str | None:
 
 
 def cmd_iteration_closed_stories(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Summarize User Stories in one iteration with a given state (command: iteration-closed-stories).
+
+    A WIQL query matches the work item type "User Story" (hard-coded),
+    IterationPath equal to --iteration-path (an exact match, so child iterations
+    are excluded) and State equal to --state (default "Closed"). Fields are then
+    fetched in batches of 200 through workitemsbatch.
+
+    Returns:
+        {"query": {"iterationPath", "state", "workItemType"},
+         "summary": {"storyCount", "totalStoryPoints", "byAssignee" (name -> count,
+                     most first; "Unassigned" when empty), "topTags" (up to 10
+                     [{"tag", "count"}])},
+         "stories": [{"id", "title", "state", "closedDate", "assignedTo" (display
+                      name), "storyPoints" (0.0 if unset), "tags" (list), "url"}]}
+        Stories are sorted by closedDate, newest first. When nothing matches, the
+        same shape is returned with zeros and empty lists.
+    """
     iteration_path = args.iteration_path
     state = args.state
 
@@ -867,6 +1198,29 @@ def cmd_iteration_closed_stories(args: argparse.Namespace, client: AdoClient) ->
 
 
 def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Write one person's closed work items in a date range to a JSON file (command: export-closed-stories).
+
+    A WIQL query matches the type, the states and ClosedDate within
+    [--from-date, --to-date], with the end date inclusive. Fields are batch-fetched,
+    then filtered on the client with _assignee_matches, because the query does not
+    filter by assignee. Rich-text fields are flattened to plain text, and dates are
+    written as M/D/YYYY.
+
+    The file is written to --output (default
+    data/ado_closed_stories_since_<from-date>.json, relative to the working
+    directory). Parent directories are created. The file holds {"organization",
+    "project", "fromDate", "fromDateIso", "toDate", "toDateIso", "workItemType",
+    "states", "assignee", "count", "items": [{"id", "date", "title", "state",
+    "workItemType", "assignedTo", "tags", "description", "acceptanceCriteria"}]}.
+
+    Returns:
+        {"count", "output", "fromDate", "toDate", "workItemType", "states",
+        "assignee"}. The items themselves are only in the file.
+
+    Raises:
+        CliError: VALIDATION_ERROR for bad dates, --to-date before --from-date,
+            empty --states, or no assignee (--assigned-to or ADO_ASSIGNEE).
+    """
     from_date_iso = _validate_from_date(args.from_date)
     to_date_iso = _validate_to_date(args.to_date) if args.to_date else None
     if args.to_date and args.to_date < args.from_date:
@@ -974,6 +1328,28 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
     }
 
 def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """List every revision a user made in a date range (command: export-modifications).
+
+    Pages through wit/reporting/workitemrevisions (up to 2000 per page) starting at
+    --from-date, following continuationToken until isLastBatch. It stops early at
+    the first revision dated on or after the day after --to-date, which assumes
+    revisions arrive in date order. Revisions are matched to --user on
+    System.ChangedBy with _assignee_matches. Every revision in the project in the
+    range is downloaded, so wide ranges can be slow.
+
+    Nothing is written to disk. The items are returned in the envelope.
+
+    Returns:
+        {"user", "fromDate", "toDate", "count", "items": [{"id", "revision",
+        "changedDate" (raw ISO), "changedBy", "title", "state", "workItemType",
+        "url"}]}. There is one item per revision, so a work item can appear more
+        than once. Items are sorted by changedDate, newest first.
+
+    Raises:
+        CliError: VALIDATION_ERROR for bad dates or a blank --user; API_ERROR for
+            an invalid ChangedDate or broken pagination (missing or repeated
+            continuation token).
+    """
     from_date_iso = _validate_from_date(args.from_date)
     to_date_iso = _validate_to_date(args.to_date) if args.to_date else None
     if to_date_iso and to_date_iso < from_date_iso:
@@ -1074,6 +1450,12 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
     }
 
 def build_parser() -> argparse.ArgumentParser:
+    """Define the argparse command line: one subparser per command, each with its flags.
+
+    Flag names map to cmd_* argument attributes (for example --assigned-to becomes
+    args.assigned_to). Callers should pass values as --flag=value so that values
+    beginning with "-" are not read as options.
+    """
     parser = argparse.ArgumentParser(description="Azure DevOps custom CLI prototype")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1191,6 +1573,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str]) -> int:
+    """Run the CLI: parse arguments, load config, dispatch the command and print one envelope.
+
+    Returns the process exit code: 0 on success, 1 for any handled failure. Every
+    handled path prints exactly one JSON envelope to stdout. Argument errors are
+    the exception: argparse prints usage to stderr and exits with code 2 without an
+    envelope. Unexpected exceptions (for example a missing --body-file) are
+    reported as API_ERROR.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 

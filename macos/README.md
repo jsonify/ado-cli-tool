@@ -48,4 +48,6 @@ The app passes a variable to the engine only when its field is filled in. If you
 - The engine runs in `~/Library/Application Support/ADODesk`, so relative paths it writes end up there. Exports in the app always pass an absolute `--output` path.
 - GUI apps don't inherit your shell's `PATH`. The app adds `/opt/homebrew/bin` and `/usr/local/bin` so it can find `python3`. To use a specific interpreter, set **Engine → Python**.
 
+For each command's flags, `result` shape, error codes and quirks, see [`docs/ENGINE_REFERENCE.md`](../docs/ENGINE_REFERENCE.md).
+
 The `.app` contains a copy of `ado_cli.py` taken at build time. If you change the script, re-run `./build-app.sh`, or set **Engine → Script** to the file in your checkout so the app always uses the current version.
