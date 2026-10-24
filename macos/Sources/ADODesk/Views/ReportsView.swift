@@ -1,22 +1,67 @@
 import AppKit
 import SwiftUI
 
-struct ExportsView: View {
+struct ReportsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 ClosedStoriesExportBox()
                 ModificationsExportBox()
+                RecentExportsBox()
             }
             .padding(20)
             .frame(maxWidth: 960, alignment: .leading)
         }
-        .navigationTitle("Exports")
+        .navigationTitle("Reports")
+    }
+}
+
+private struct RecentExportsBox: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Recent Exports").font(.headline)
+                    Spacer()
+                    Button("Clear") { model.clearExports() }
+                        .buttonStyle(.borderless)
+                        .disabled(model.exports.isEmpty)
+                }
+                if model.exports.isEmpty {
+                    Text("Files you export appear here.").foregroundStyle(.secondary)
+                }
+                ForEach(model.exports) { export in
+                    HStack {
+                        Image(systemName: "doc.text").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(fileURLWithPath: export.path).lastPathComponent)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text("\(export.kind) · \(export.count) item(s) · \(export.date.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if FileManager.default.fileExists(atPath: export.path) {
+                            Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: export.path)) }
+                            Button("Reveal in Finder") { Desktop.reveal(export.path) }
+                        } else {
+                            Text("Moved or deleted").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .padding(6)
+        }
     }
 }
 
 private struct ClosedStoriesExportBox: View {
     @EnvironmentObject private var cli: CLIRunner
+    @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: SettingsStore
     @StateObject private var task = TaskState()
 
@@ -110,7 +155,9 @@ private struct ClosedStoriesExportBox: View {
         let finalArgs = args
         result = nil
         task.run {
-            result = try await cli.run(finalArgs, as: ExportClosedResult.self)
+            let exported = try await cli.run(finalArgs, as: ExportClosedResult.self)
+            result = exported
+            model.recordExport(kind: "Closed stories", path: exported.output, count: exported.count)
         }
     }
 
@@ -122,6 +169,7 @@ private struct ClosedStoriesExportBox: View {
 
 private struct ModificationsExportBox: View {
     @EnvironmentObject private var cli: CLIRunner
+    @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: SettingsStore
     @StateObject private var task = TaskState()
 
@@ -242,6 +290,7 @@ private struct ModificationsExportBox: View {
         do {
             try encoder.encode(result).write(to: url, options: .atomic)
             saveError = nil
+            model.recordExport(kind: "Modifications", path: url.path, count: result.count)
         } catch {
             saveError = "Could not save file: \(error.localizedDescription)"
         }

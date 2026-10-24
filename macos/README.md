@@ -4,15 +4,22 @@ ADO Desk is a native SwiftUI app. It runs `ado_cli.py` in the background and sho
 
 ## Features
 
-| Sidebar        | Engine command(s)                                   |
-| -------------- | --------------------------------------------------- |
-| Work Item      | `get`, `update`, `comment`, `delete`                |
-| Create         | `create` (and `iteration-pick` for the iteration)   |
-| Iterations     | `iteration-list`, `iteration-get`, `iteration-update-goal`, `iteration-closed-stories` |
-| Sprint Report  | `iteration-closed-stories`, with a "Copy as Markdown" summary |
-| Pick Iteration | `iteration-pick`                                    |
-| Exports        | `export-closed-stories`, `export-modifications`     |
-| Activity       | Every engine call, with its command line and raw JSON output |
+| Sidebar        | What it does | Engine command(s) |
+| -------------- | ------------ | ----------------- |
+| Current Sprint | Home. The team's current iteration: dates and days left, an editable sprint goal, closed and active story counts, and the closed stories with **Copy as Markdown**. | `iteration-list --timeframe=current`, `iteration-get`, `iteration-update-goal`, `iteration-closed-stories` |
+| Work Items     | Recently opened items (type an ID to open one) next to an inline editor. Changed fields are highlighted, and a bar offers **Discard** or **Save** (⌘S). Post comments, open in the browser, delete from the ⋯ menu. | `get`, `update`, `comment`, `delete` |
+| Sprints        | Iterations grouped Current / Upcoming / Past, each shown like the home view. | `iteration-list`, plus the above |
+| Reports        | Closed-stories and modifications exports, and a list of recent exports with **Reveal in Finder**. | `export-closed-stories`, `export-modifications` |
+
+Also:
+
+- **New Work Item** (⌘N or the + toolbar button) opens a sheet. The Iteration field offers the current sprint and an `iteration-pick` suggestion for the area path, so there's no separate picking step. **Create another** keeps the sheet open with placement and assignment filled in.
+- **Command palette** (⌘K): open an item by ID or title, create an item, jump to a section, or show the activity log. Return runs the first match.
+- **Engine status** sits at the bottom of the sidebar. Click it (or press ⇧⌘Y) for the activity drawer, which lists every engine call with its command line, duration and raw JSON output.
+- ⌘1–⌘4 switch sections.
+- The first launch shows a setup card for the organization, project, team and token, or an existing `.env` file.
+
+Recent items and exports are remembered in the app's preferences. The engine has no "list my work items" command, so the Work Items list holds the items you've opened, created or updated in ADO Desk. Area and iteration are read-only in the editor because `update` doesn't change them.
 
 ## Requirements
 
