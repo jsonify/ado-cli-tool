@@ -26,6 +26,24 @@ enum Format {
         return String(iso.prefix(16)).replacingOccurrences(of: "T", with: " ")
     }
 
+    private static let monthDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter
+    }()
+
+    /// The calendar day of an ADO timestamp. Iteration dates are midnight UTC, so the time is ignored.
+    static func date(_ iso: String?) -> Date? {
+        guard let iso, iso.count >= 10 else { return nil }
+        return ymd.date(from: String(iso.prefix(10)))
+    }
+
+    /// "2025-01-06T00:00:00Z" → "Jan 6"
+    static func shortDay(_ iso: String?) -> String {
+        guard let date = date(iso) else { return "—" }
+        return monthDay.string(from: date)
+    }
+
     static func points(_ value: Double) -> String {
         value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }
@@ -211,5 +229,71 @@ struct SettingsButton: View {
                 Label("Settings", systemImage: "gearshape")
             }
         }
+    }
+}
+
+struct WorkItemTypeIcon: View {
+    let type: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .foregroundStyle(color)
+            .frame(width: 16)
+            .help(type)
+    }
+
+    private var symbol: String {
+        switch type {
+        case "Bug": return "ladybug.fill"
+        case "Task": return "checkmark.square.fill"
+        case "Feature": return "trophy.fill"
+        case "Epic": return "crown.fill"
+        default: return "book.fill"
+        }
+    }
+
+    private var color: Color {
+        switch type {
+        case "Bug": return .red
+        case "Task": return .yellow
+        case "Feature": return .purple
+        case "Epic": return .orange
+        default: return .blue
+        }
+    }
+}
+
+struct StateBadge: View {
+    let state: String
+
+    var body: some View {
+        Text(state)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(color.opacity(0.18)))
+            .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        switch state {
+        case "Active", "Committed", "In Progress": return .blue
+        case "Resolved": return .teal
+        case "Closed", "Done": return .green
+        case "Removed": return .gray
+        default: return .secondary
+        }
+    }
+}
+
+extension View {
+    /// Tints a field that differs from its saved value.
+    func changedHighlight(_ changed: Bool) -> some View {
+        // Drawn outside the field's frame so toggling it doesn't move the layout.
+        background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(changed ? Color.accentColor.opacity(0.12) : Color.clear)
+                .padding(-4)
+        )
     }
 }
