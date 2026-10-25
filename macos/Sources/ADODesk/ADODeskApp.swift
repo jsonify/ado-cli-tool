@@ -34,6 +34,9 @@ struct AppCommands: Commands {
     @ObservedObject var model: AppModel
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { Updater.check(userInitiated: true) }
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Work Item…") { model.showNewItem = true }
                 .keyboardShortcut("n")
@@ -58,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Needed when launched via `swift run`, where there is no app bundle.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in Updater.start() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
