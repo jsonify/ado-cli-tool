@@ -72,8 +72,9 @@ If you already created the project with plain Agile, go to **Organization settin
    - **Project and Team: Read**
 4. Select **Create** and copy the token. Azure DevOps won't show it again.
 
-If the seed script reports `AUTH_ERROR` while it changes team settings, do those two steps by hand (see
-[step 7](#7-finish-in-the-web-ui)) and run it again with `--skip-paths`.
+Some tokens with these scopes are still refused when the seed script sets the team's area (HTTP 401). The script then
+says so, carries on with the work items, and you set the area by hand (see [step 7](#7-finish-in-the-web-ui)). If it
+stops with `AUTH_ERROR` anywhere else, do the team steps by hand and run it again with `--skip-paths`.
 
 ## 5. Write a sandbox .env file
 
@@ -131,7 +132,9 @@ The script can't do these:
 
 1. **Check the team settings** in **Project settings** → **Team configuration**:
    - **Iterations**: the six sprints are listed. If not, select **+ Select iteration(s)** and add them.
-   - **Areas**: `ADO Desk Sandbox\Desk` is the default, with sub-areas included.
+   - **Areas**: `ADO Desk Sandbox\Desk` is the default, with sub-areas included. If not, select
+     **+ Select area(s)**, add it with **Include sub areas** checked, then choose **…** → **Set as default** on its
+     row.
    - **General** → **Working with bugs**: choose **Bugs are managed with requirements**, so the two seeded bugs appear
      on the backlog beside the stories.
 2. **Set a sprint goal** for October 2026 in **Boards** → **Sprints**, or leave it empty and set it from ADO Desk.

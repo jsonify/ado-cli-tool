@@ -707,15 +707,23 @@ class Seeder:
                 )
         print(f"  {len(sprint_ids)} sprints selected for the team")
 
-        values = self.client.team_request("GET", f"work/teamfieldvalues?api-version={API_VERSION}", team=self.team)
-        if values.get("defaultValue") != self.area_path():
-            self.client.team_request(
-                "PATCH",
-                f"work/teamfieldvalues?api-version={API_VERSION}",
-                team=self.team,
-                payload={"defaultValue": self.area_path(), "values": [{"value": self.area_path(), "includeChildren": True}]},
-            )
-        print(f"  team area is {self.area_path()} (with sub-areas)")
+        try:
+            values = self.client.team_request("GET", f"work/teamfieldvalues?api-version={API_VERSION}", team=self.team)
+            if values.get("defaultValue") != self.area_path():
+                self.client.team_request(
+                    "PATCH",
+                    f"work/teamfieldvalues?api-version={API_VERSION}",
+                    team=self.team,
+                    payload={"defaultValue": self.area_path(), "values": [{"value": self.area_path(), "includeChildren": True}]},
+                )
+            print(f"  team area is {self.area_path()} (with sub-areas)")
+        except AdoApiError as err:
+            # A token that can create areas and select sprints can still be refused here (seen as HTTP 401).
+            # The work items don't depend on it, so say what to do by hand and carry on.
+            if err.status not in (401, 403):
+                raise
+            print(f"  Couldn't set the team area (HTTP {err.status}). Set it by hand: Project settings > Team "
+                  f"configuration > Areas, add {self.area_path()} with sub-areas included, and make it the default.")
 
     # --- items -------------------------------------------------------------
 
