@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/jsonify/ado-desk/compare/v0.2.1...v0.3.0) (2026-10-25)
+
+
+### Features
+
+* **app:** add the ADO Desk app icon ([de179f5](https://github.com/jsonify/ado-desk/commit/de179f5d6503ba0757e54b6353b73e58303d6bea))
+
+
+### Bug Fixes
+
+* **engine:** format inline code in Markdown list items ([7385bd4](https://github.com/jsonify/ado-desk/commit/7385bd4be2eebefd7e433b80bba2546200da9342))
+* **engine:** include Resolved items in export-closed-stories ([549e475](https://github.com/jsonify/ado-desk/commit/549e4754e5acff8d2de36c1108126ca907af548d))
+
 ## [0.2.1](https://github.com/jsonify/ado-desk/compare/v0.2.0...v0.2.1) (2026-10-25)
 
 
