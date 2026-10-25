@@ -243,10 +243,10 @@ Find work item ids in **Boards** → **Backlogs**, or with the `ado-desk-seed` t
 
 ### Reports
 
-- [ ] **Export closed stories** from 2026-08-01 for your email: **19 items**, the Closed stories. The 3 Resolved
-      stories are left out even though the default states are `Closed,Resolved`: the query filters on Closed Date,
-      which Azure DevOps only sets when an item is closed. Every closed date is the day you ran the seed script, so
-      ranges that end before that day export nothing.
+- [ ] **Export closed stories** from 2026-08-01 for your email: **22 items**, the 19 Closed and 3 Resolved stories
+      assigned to you, newest first. Every completion date is the day you ran the seed script, so ranges that end
+      before that day export nothing. An engine from before jsonify/ado-desk#17 exports only the 19 Closed stories,
+      because it filtered on Closed Date, which Resolved items don't have.
 - [ ] **Export modifications** for your email, from the seed day: several rows per item, one for each revision.
 - [ ] **Reveal in Finder** opens the exported file.
 
@@ -254,13 +254,12 @@ Find work item ids in **Boards** → **Backlogs**, or with the `ado-desk-seed` t
 
 - [ ] ⇧⌘Y lists every engine call above, with its command line, duration and raw JSON.
 
-### Known gaps the seed data shows
+### Known gaps
 
-- `export-closed-stories` never finds Resolved items (see Reports above).
-- Backticks inside Markdown bullet lists are sent as literal backticks. `format_description_html` only formats inline
-  code in plain paragraphs, so the seeded descriptions show `` `--ac` `` in a few bullets.
 - The app's Work Items list only holds items you've opened, created or updated in ADO Desk, because the engine has no
   "list my work items" command. It starts empty even though the board is full.
+- The seeded descriptions put inline code (`` `--ac` ``) in bullet lists. With an engine from before
+  jsonify/ado-desk#17, those show as literal backticks instead of code.
 
 ## Reset or move the board forward
 
