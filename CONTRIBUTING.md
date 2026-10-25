@@ -40,6 +40,10 @@ cd macos && swift test
 `Tests/ADODeskTests` covers logic that runs without a window, such as the updater's version comparison, release
 parsing and checksums. CI builds and tests with warnings as errors, so builds must be warning-free.
 
+To try the app against real data, set up a sandbox Azure DevOps project and fill it with a test backlog with
+`scripts/seed_test_board.py`. [docs/TEST_BOARD.md](docs/TEST_BOARD.md) walks through it and has a test checklist for
+each section of the app.
+
 ## Commit messages and versions
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org), such as `fix(app): ...`,
