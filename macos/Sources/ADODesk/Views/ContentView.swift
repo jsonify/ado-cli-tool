@@ -16,7 +16,7 @@ struct ContentView: View {
                 EngineStatusPill()
                     .padding(10)
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 320)
         } detail: {
             VStack(spacing: 0) {
                 Group {
