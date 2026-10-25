@@ -55,7 +55,8 @@ final class SettingsStore: ObservableObject {
         envFile = defaults.string(forKey: Keys.envFile) ?? ""
         sslCertFile = defaults.string(forKey: Keys.sslCertFile) ?? ""
         checkForUpdates = defaults.object(forKey: Keys.checkForUpdates) as? Bool ?? true
-        hasToken = Keychain.readToken() != nil
+        // Only checks that a token exists: reading it can wait on a Keychain prompt, which would block launch.
+        hasToken = Keychain.hasToken()
     }
 
     /// True when nothing is configured in the app; the engine may still find a .env file.
@@ -66,7 +67,7 @@ final class SettingsStore: ObservableObject {
     @discardableResult
     func saveToken(_ token: String) -> Bool {
         let saved = Keychain.saveToken(token.trimmed)
-        hasToken = Keychain.readToken() != nil
+        hasToken = Keychain.hasToken()
         return saved
     }
 
@@ -75,7 +76,8 @@ final class SettingsStore: ObservableObject {
         hasToken = false
     }
 
-    /// Environment variables understood by ado_cli.py's load_config().
+    /// Environment variables understood by ado_cli.py's load_config(), except ADO_TOKEN: ProcessExecutor reads the
+    /// token off the main thread, since the Keychain may ask the user first.
     func engineEnvironment() -> [String: String] {
         let pairs: [(String, String)] = [
             ("ADO_ORG", org),
@@ -90,9 +92,6 @@ final class SettingsStore: ObservableObject {
         var environment: [String: String] = [:]
         for (key, value) in pairs where !value.trimmed.isEmpty {
             environment[key] = value.trimmed
-        }
-        if let token = Keychain.readToken(), !token.isEmpty {
-            environment["ADO_TOKEN"] = token
         }
         return environment
     }
@@ -147,6 +146,17 @@ enum Keychain {
         ]
     }
 
+    /// Whether a token is stored. Asks for its attributes, not its data, so the Keychain never prompts for this.
+    static func hasToken() -> Bool {
+        var query = baseQuery
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
+    }
+
+    /// The stored token. When a different build of the app saved it, macOS asks the user before handing it over and
+    /// this call waits for the answer, so never call it on the main thread.
     static func readToken() -> String? {
         var query = baseQuery
         query[kSecReturnData as String] = true
