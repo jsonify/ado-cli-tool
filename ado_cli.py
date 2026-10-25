@@ -66,6 +66,14 @@ def format_description_html(text: str) -> str:
     if not text:
         return ""
 
+    def inline_code(escaped: str) -> str:
+        """Turn `code` spans in already-escaped text into <code> elements."""
+        return re.sub(
+            r'`([^`]+)`',
+            r'<code style="background-color: #f6f8fa; padding: 2px 4px; border-radius: 3px;">\1</code>',
+            escaped,
+        )
+
     lines = text.splitlines()
     html_lines = []
     in_list = False
@@ -113,7 +121,7 @@ def format_description_html(text: str) -> str:
             else:
                 space_idx = stripped.find(" ")
                 content = html.escape(stripped[space_idx + 1:])
-            html_lines.append(f"<li>{content}</li>")
+            html_lines.append(f"<li>{inline_code(content)}</li>")
             continue
         else:
             if in_list:
@@ -132,14 +140,7 @@ def format_description_html(text: str) -> str:
                 elif stripped.startswith("# "):
                     html_lines.append(f"<h1>{html.escape(stripped[2:])}</h1>")
                 else:
-                    # Inline code backticks
-                    line_html = html.escape(line)
-                    line_html = re.sub(
-                        r'`([^`]+)`',
-                        r'<code style="background-color: #f6f8fa; padding: 2px 4px; border-radius: 3px;">\1</code>',
-                        line_html,
-                    )
-                    html_lines.append(f"{line_html}<br />")
+                    html_lines.append(f"{inline_code(html.escape(line))}<br />")
     
     if in_list:
         html_lines.append(f"</{list_type}>")
@@ -596,26 +597,39 @@ def _build_closed_stories_wiql(
     """Build the WIQL query for export-closed-stories.
 
     Selects ids in the project with the given work item type and any of the states,
-    whose ClosedDate is >= from_date_iso and, if given, <= to_date_iso, newest
-    first. The caller passes the day after --to-date as to_date_iso so that the
-    end date is inclusive.
+    completed in the date range: ClosedDate >= from_date_iso and, if given,
+    <= to_date_iso. Azure DevOps only sets ClosedDate in the Closed state, so items
+    in any of the other states (Resolved, by default) match on ResolvedDate instead.
+    The caller passes the day after --to-date as to_date_iso so that the end date
+    is inclusive.
     """
+    def in_range(date_field: str) -> str:
+        condition = f"[{date_field}] >= '{from_date_iso}'"
+        if to_date_iso:
+            condition += f" AND [{date_field}] <= '{to_date_iso}'"
+        return condition
+
     escaped_states = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in states)
     escaped_type = _escape_wiql_literal(work_item_type)
     escaped_project = _escape_wiql_literal(project)
 
-    wiql = (
+    completed = f"({in_range('Microsoft.VSTS.Common.ClosedDate')})"
+    open_states = [s for s in states if s.lower() != "closed"]
+    if open_states:
+        escaped_open = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in open_states)
+        completed = (
+            f"({completed} OR ([System.State] IN ({escaped_open}) "
+            f"AND {in_range('Microsoft.VSTS.Common.ResolvedDate')}))"
+        )
+
+    return (
         "SELECT [System.Id] "
         "FROM WorkItems "
         f"WHERE [System.TeamProject] = '{escaped_project}' "
         f"AND [System.WorkItemType] = '{escaped_type}' "
         f"AND [System.State] IN ({escaped_states}) "
-        f"AND [Microsoft.VSTS.Common.ClosedDate] >= '{from_date_iso}' "
+        f"AND {completed}"
     )
-    if to_date_iso:
-        wiql += f"AND [Microsoft.VSTS.Common.ClosedDate] <= '{to_date_iso}' "
-    wiql += "ORDER BY [Microsoft.VSTS.Common.ClosedDate] DESC"
-    return wiql
 
 def _assignee_matches(expected: str, actual: str | None) -> bool:
     """Loosely compare a person's name against an identity display name.
@@ -1200,11 +1214,13 @@ def cmd_iteration_closed_stories(args: argparse.Namespace, client: AdoClient) ->
 def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
     """Write one person's closed work items in a date range to a JSON file (command: export-closed-stories).
 
-    A WIQL query matches the type, the states and ClosedDate within
-    [--from-date, --to-date], with the end date inclusive. Fields are batch-fetched,
+    A WIQL query matches the type, the states and the completion date within
+    [--from-date, --to-date], with the end date inclusive: ClosedDate for Closed
+    items, ResolvedDate for items in the other states (ADO only sets ClosedDate on
+    Closed). Fields are batch-fetched,
     then filtered on the client with _assignee_matches, because the query does not
-    filter by assignee. Rich-text fields are flattened to plain text, and dates are
-    written as M/D/YYYY.
+    filter by assignee. Rich-text fields are flattened to plain text, and the
+    completion date is written as M/D/YYYY. Items are sorted newest first.
 
     The file is written to --output (default
     data/ado_closed_stories_since_<from-date>.json, relative to the working
@@ -1252,6 +1268,7 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
         "System.AssignedTo",
         "System.Tags",
         "Microsoft.VSTS.Common.ClosedDate",
+        "Microsoft.VSTS.Common.ResolvedDate",
         "System.Description",
         "Microsoft.VSTS.Common.AcceptanceCriteria",
     ]
@@ -1266,35 +1283,44 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
         batch_result = client.request("POST", f"wit/workitemsbatch?api-version={API_VERSION}", payload=batch_payload)
         raw_items.extend(batch_result.get("value", []))
 
-    items: list[dict[str, Any]] = []
+    # (raw completion date, item) pairs. ADO returns UTC ISO 8601 strings, so they sort as text.
+    dated_items: list[tuple[str, dict[str, Any]]] = []
     for item in raw_items:
         fields = item.get("fields", {})
         assigned_to = _normalize_identity_name(fields.get("System.AssignedTo"))
         if not _assignee_matches(assignee, assigned_to):
             continue
 
-        closed_date_raw = fields.get("Microsoft.VSTS.Common.ClosedDate")
-        closed_date = ""
-        if closed_date_raw:
+        # Closed items carry ClosedDate; Resolved (and other non-Closed) items only ResolvedDate.
+        completed_raw = fields.get("Microsoft.VSTS.Common.ClosedDate") or fields.get("Microsoft.VSTS.Common.ResolvedDate")
+        completed_date = ""
+        if completed_raw:
             try:
-                parsed = dt.datetime.fromisoformat(str(closed_date_raw).replace("Z", "+00:00"))
-                closed_date = f"{parsed.month}/{parsed.day}/{parsed.year}"
+                parsed = dt.datetime.fromisoformat(str(completed_raw).replace("Z", "+00:00"))
+                completed_date = f"{parsed.month}/{parsed.day}/{parsed.year}"
             except ValueError:
-                closed_date = _sanitize_rich_text(closed_date_raw)
+                completed_date = _sanitize_rich_text(completed_raw)
 
-        items.append(
-            {
-                "id": item.get("id", ""),
-                "date": closed_date,
-                "title": _sanitize_rich_text(fields.get("System.Title")),
-                "state": _sanitize_rich_text(fields.get("System.State")),
-                "workItemType": _sanitize_rich_text(fields.get("System.WorkItemType")),
-                "assignedTo": _sanitize_rich_text(assigned_to),
-                "tags": _sanitize_rich_text(fields.get("System.Tags")),
-                "description": _sanitize_rich_text(fields.get("System.Description")),
-                "acceptanceCriteria": _sanitize_rich_text(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria")),
-            }
+        dated_items.append(
+            (
+                str(completed_raw or ""),
+                {
+                    "id": item.get("id", ""),
+                    "date": completed_date,
+                    "title": _sanitize_rich_text(fields.get("System.Title")),
+                    "state": _sanitize_rich_text(fields.get("System.State")),
+                    "workItemType": _sanitize_rich_text(fields.get("System.WorkItemType")),
+                    "assignedTo": _sanitize_rich_text(assigned_to),
+                    "tags": _sanitize_rich_text(fields.get("System.Tags")),
+                    "description": _sanitize_rich_text(fields.get("System.Description")),
+                    "acceptanceCriteria": _sanitize_rich_text(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria")),
+                },
+            )
         )
+
+    # Newest first. workitemsbatch doesn't keep the query's order, so sort here.
+    dated_items.sort(key=lambda pair: pair[0], reverse=True)
+    items = [item for _, item in dated_items]
 
     payload: dict[str, Any] = {
         "organization": client.cfg.org,

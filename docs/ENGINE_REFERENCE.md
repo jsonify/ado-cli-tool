@@ -74,7 +74,7 @@ The "Swift model" column lists the type in [`Models.swift`](../macos/Sources/ADO
 | `comment` | `--id` (required), `--body` or `--body-file` | `id, commentId` | `CommentResult` |
 
 Notes:
-- **Markdown:** `--description` (on create and update) supports headings, `-`/`*` bullets, `1.`–`9.` numbered items, fenced code blocks and inline backticks. These are converted to HTML. `--ac` items are HTML-escaped and turned into a `<ul>`. `comment --body` and `--add-comment` are sent **as-is** (ADO treats them as HTML).
+- **Markdown:** `--description` (on create and update) supports headings, `-`/`*` bullets, `1.`–`9.` numbered items, fenced code blocks and inline backticks (in paragraphs and list items). These are converted to HTML. `--ac` items are HTML-escaped and turned into a `<ul>`. `comment --body` and `--add-comment` are sent **as-is** (ADO treats them as HTML).
 - **`url` differs between commands.** `create` and `update` return the browser URL (`…/_workitems/edit/<id>`). `get` returns ADO's REST API URL.
 - **Identity fields are not always strings.** `assignedTo` and `secondaryAssignee` in `create` and `get` are usually identity objects (`displayName`, `uniqueName`, …), so decode them as `JSONValue`.
 - **Defaults on `create`:** if `--area-path` or `--iteration-path` is omitted, the `ADO_AREA_PATH` or `ADO_ITERATION_PATH` default is used. Passing an empty value (`--area-path=`) skips the field.
@@ -119,6 +119,9 @@ Notes:
   - The default path is relative (`data/…`) to the engine's working directory, which for the app is `~/Library/Application Support/ADODesk`. Pass an absolute `--output`.
   - File schema: `organization, project, fromDate, fromDateIso, toDate, toDateIso, workItemType, states, assignee, count, items[{id, date (M/D/YYYY), title, state, workItemType, assignedTo, tags, description, acceptanceCriteria}]`. Rich text is flattened to plain text.
   - `--to-date` is inclusive.
+  - The date range applies to the completion date: Closed Date for `Closed` items, Resolved Date for items in the
+    other `--states` (Azure DevOps only sets Closed Date on close). Each item's `date` is that completion date, and
+    items are sorted newest first.
   - The assignee is matched loosely on the client: case and word order are ignored, and a name of at least 2 words matches if all its words appear in the display name.
 - **`export-modifications` writes nothing.** Items come back in `result`.
   - There is one item per revision, so the same work item can appear several times. `CLIRunner`'s `Modification.id` already combines id, revision and date.
