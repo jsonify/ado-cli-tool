@@ -1,5 +1,7 @@
 # ADO Desk
 
+<img src="macos/Resources/AppIcon.png" alt="ADO Desk icon" width="128" align="right">
+
 A native macOS app for the Azure DevOps work you do every day: the current sprint, your work items, and the reports
 you export at the end of it. ADO Desk is a SwiftUI front end for `ado_cli.py`, a small standard-library Python CLI that
 talks to the Azure DevOps REST API. You can use either one on its own.

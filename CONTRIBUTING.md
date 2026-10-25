@@ -31,6 +31,11 @@ To work in Xcode, open `macos/Package.swift` and run the `ADODesk` scheme.
 The `.app` contains a copy of `ado_cli.py` taken at build time. After changing the script, re-run
 `Scripts/build_app.sh`, or set **Settings → Engine → Script** to the file in your checkout.
 
+The app icon is `macos/Resources/AppIcon.png`, a 1024×1024 PNG with the artwork inside Apple's icon grid (about 100 px
+of transparent margin on each side). `build_app.sh` turns it into `AppIcon.icns` with `sips` and `iconutil`, so to
+change the icon, replace that file. `swift run` starts a bare executable, not an app bundle, so it shows the generic
+icon.
+
 ## Tests
 
 ```sh
