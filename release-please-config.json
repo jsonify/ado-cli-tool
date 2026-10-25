@@ -7,7 +7,7 @@
   "bootstrap-sha": "8ff35b18440538c2666f3372478eea933f4f73a5",
   "packages": {
     ".": {
-      "package-name": "ADO Desk",
+      "package-name": "ADODesk",
       "changelog-path": "CHANGELOG.md"
     }
   }
