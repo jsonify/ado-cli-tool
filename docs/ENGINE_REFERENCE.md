@@ -119,6 +119,9 @@ Notes:
   - The default path is relative (`data/…`) to the engine's working directory, which for the app is `~/Library/Application Support/ADODesk`. Pass an absolute `--output`.
   - File schema: `organization, project, fromDate, fromDateIso, toDate, toDateIso, workItemType, states, assignee, count, items[{id, date (M/D/YYYY), title, state, workItemType, assignedTo, tags, description, acceptanceCriteria}]`. Rich text is flattened to plain text.
   - `--to-date` is inclusive.
+  - The date range applies to the completion date: Closed Date for `Closed` items, Resolved Date for items in the
+    other `--states` (Azure DevOps only sets Closed Date on close). Each item's `date` is that completion date, and
+    items are sorted newest first.
   - The assignee is matched loosely on the client: case and word order are ignored, and a name of at least 2 words matches if all its words appear in the display name.
 - **`export-modifications` writes nothing.** Items come back in `result`.
   - There is one item per revision, so the same work item can appear several times. `CLIRunner`'s `Modification.id` already combines id, revision and date.
