@@ -172,10 +172,15 @@ enum ProcessExecutor {
     static func run(_ invocation: Invocation) async throws -> ProcessOutput {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
+                var environment = invocation.environment
+                if let token = Keychain.readToken() {
+                    environment["ADO_TOKEN"] = token
+                }
+
                 let process = Process()
                 process.executableURL = invocation.executable
                 process.arguments = invocation.arguments
-                process.environment = invocation.environment
+                process.environment = environment
                 process.currentDirectoryURL = invocation.workingDirectory
 
                 let stdoutPipe = Pipe()
