@@ -1,10 +1,12 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ReportsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                WeeklyReportBox()
                 ClosedStoriesExportBox()
                 ModificationsExportBox()
                 RecentExportsBox()
@@ -55,6 +57,159 @@ private struct RecentExportsBox: View {
                 }
             }
             .padding(6)
+        }
+    }
+}
+
+private struct WeeklyReportBox: View {
+    @EnvironmentObject private var cli: CLIRunner
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var settings: SettingsStore
+    @StateObject private var task = TaskState()
+
+    /// One area path per line, kept between launches.
+    @AppStorage("reports.weeklyAreaPaths") private var areaPathsText = ""
+    @AppStorage("reports.weeklyNextCount") private var nextCount = 3
+    @State private var fromDate = Calendar.current.date(byAdding: .day, value: -6, to: Date()) ?? Date()
+    @State private var toDate = Date()
+    @State private var result: WeeklyReportResult?
+    @State private var copied = false
+    @State private var actionError: String?
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Weekly Report").font(.headline)
+                Text("Your completed, progressed and blocked items, and what's next, for each area path. Copy it into an email or open it in Mail.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Form {
+                    LabeledContent("Area paths") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextEditor(text: $areaPathsText)
+                                .font(.body.monospaced())
+                                .frame(minHeight: 44, maxHeight: 80)
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                            Text(areaPathsHint)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    DatePicker("From", selection: $fromDate, displayedComponents: .date)
+                    DatePicker("To", selection: $toDate, in: fromDate..., displayedComponents: .date)
+                    Stepper("Next week: \(nextCount) item(s) per area path", value: $nextCount, in: 1...10)
+                }
+                HStack {
+                    if let result {
+                        Button {
+                            Desktop.copyRich(html: result.html, plain: result.markdown)
+                            copied = true
+                        } label: {
+                            Label(copied ? "Copied" : "Copy for Email", systemImage: copied ? "checkmark" : "doc.on.clipboard")
+                        }
+                        Button {
+                            if !Desktop.composeEmail(subject: "Weekly report: \(result.rangeLabel)", html: result.html) {
+                                actionError = "No mail app is set up to compose messages. Use Copy for Email instead."
+                            }
+                        } label: {
+                            Label("Open in Mail", systemImage: "envelope")
+                        }
+                        Button("Save Markdown…") { save(result) }
+                    }
+                    Spacer()
+                    RunButton("Build Report", systemImage: "doc.text.magnifyingglass", isRunning: task.isRunning, action: run)
+                }
+                if let message = task.errorMessage ?? actionError {
+                    ErrorBanner(message: message)
+                }
+                if let result {
+                    preview(result)
+                }
+            }
+            .padding(6)
+        }
+    }
+
+    private var areaPaths: [String] {
+        Format.lines(areaPathsText)
+    }
+
+    private var areaPathsHint: String {
+        if areaPaths.isEmpty, !settings.areaPath.trimmed.isEmpty {
+            return "One per line. Blank uses the default area path, \(settings.areaPath.trimmed)."
+        }
+        return #"One per line, for example CloudModernization\SREO Artifactory. Child areas are included."#
+    }
+
+    private func preview(_ result: WeeklyReportResult) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Weekly report: \(result.rangeLabel)").font(.title3.bold())
+            ForEach(result.sections) { section in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(section.name).font(.headline)
+                    group("Completed", section.completed) { item in "\(item.workItemType), \(item.state) \(Format.shortDay(item.date))" }
+                    group("Progressed", section.progressed) { item in
+                        "\(item.workItemType), \(item.fromState.flatMap { $0.isEmpty ? nil : $0 } ?? "Created") → \(item.state)"
+                    }
+                    group("Blockers", section.blocked) { item in
+                        item.date == nil ? "\(item.workItemType), blocked" : "\(item.workItemType), blocked since \(Format.shortDay(item.date))"
+                    }
+                    group("Next week", section.upcoming) { item in "\(item.workItemType), \(item.state)" }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func group(_ title: String, _ items: [WeeklyReportItem], detail: @escaping (WeeklyReportItem) -> String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.subheadline.bold()).foregroundStyle(.secondary)
+            if items.isEmpty {
+                Text("None").foregroundStyle(.secondary)
+            }
+            ForEach(items) { item in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Button("#\(item.id)") { Desktop.open(item.url) }
+                        .buttonStyle(.link)
+                        .monospacedDigit()
+                    Text(item.title)
+                    Text("(\(detail(item)))").foregroundStyle(.secondary)
+                }
+                .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func run() {
+        var args = [
+            "weekly-report",
+            "--from-date=\(Format.ymd.string(from: fromDate))",
+            "--to-date=\(Format.ymd.string(from: toDate))",
+            "--next-count=\(nextCount)",
+        ]
+        args += areaPaths.map { "--area-path=\($0)" }
+        let finalArgs = args
+        result = nil
+        copied = false
+        actionError = nil
+        task.run {
+            result = try await cli.run(finalArgs, as: WeeklyReportResult.self)
+        }
+    }
+
+    private func save(_ result: WeeklyReportResult) {
+        let markdownType = UTType(filenameExtension: "md") ?? .plainText
+        let name = "weekly_report_\(result.toDate).md"
+        guard let url = Desktop.chooseSaveLocation(defaultName: name, types: [markdownType]) else { return }
+        do {
+            try Data(result.markdown.utf8).write(to: url, options: .atomic)
+            actionError = nil
+            let count = result.sections.reduce(0) { $0 + $1.completed.count + $1.progressed.count + $1.blocked.count }
+            model.recordExport(kind: "Weekly report", path: url.path, count: count)
+        } catch {
+            actionError = "Could not save file: \(error.localizedDescription)"
         }
     }
 }

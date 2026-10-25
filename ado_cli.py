@@ -1475,6 +1475,337 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
         "items": items,
     }
 
+# Work item states that never go in the weekly report.
+WEEKLY_EXCLUDED_STATES = ("Removed",)
+# States that mean an item hasn't been started; open items in other states are listed first under "Next week".
+WEEKLY_NOT_STARTED_STATES = ("New", "Proposed", "To Do", "Approved")
+
+
+def _split_states(raw: str, *, flag: str) -> list[str]:
+    """Split a comma-separated --<flag> value into trimmed, non-empty state names.
+
+    Raises:
+        CliError: VALIDATION_ERROR when no state is left.
+    """
+    states = [state.strip() for state in raw.split(",") if state.strip()]
+    if not states:
+        raise CliError("VALIDATION_ERROR", f"--{flag} cannot be empty")
+    return states
+
+
+def _local_date(value: Any) -> dt.date | None:
+    """The local calendar day of an ADO UTC timestamp, or None if it is missing or unreadable.
+
+    The engine runs on the user's machine, so local time puts a Friday-evening close on Friday.
+    """
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone().date()
+
+
+def _build_weekly_report_wiql(project: str, area_path: str, since_iso: str, done_states: list[str], use_me: bool) -> str:
+    """Build the WIQL query for one area path of weekly-report.
+
+    Selects items under the area path (child areas included) that changed on or
+    after since_iso or are still open (not in done_states), excluding Removed.
+    With use_me the query keeps only items assigned to the PAT's owner (@Me);
+    otherwise the caller filters by assignee on the client.
+    """
+    escaped_done = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in done_states)
+    escaped_excluded = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in WEEKLY_EXCLUDED_STATES)
+    query = (
+        "SELECT [System.Id] "
+        "FROM WorkItems "
+        f"WHERE [System.TeamProject] = '{_escape_wiql_literal(project)}' "
+        f"AND [System.AreaPath] UNDER '{_escape_wiql_literal(area_path)}' "
+        f"AND [System.State] NOT IN ({escaped_excluded}) "
+        f"AND ([System.ChangedDate] >= '{since_iso}' OR [System.State] NOT IN ({escaped_done}))"
+    )
+    if use_me:
+        query += " AND [System.AssignedTo] = @Me"
+    return query
+
+
+def _state_transitions(client: AdoClient, item_id: int, from_date: dt.date, to_date: dt.date) -> tuple[str, str] | None:
+    """The (first old state, last new state) of an item's state changes within [from_date, to_date].
+
+    Reads wit/workItems/{id}/updates. The old state is "" when the item was created in the range.
+    Returns None when the state did not change in the range.
+    """
+    updates = client.request("GET", f"wit/workItems/{item_id}/updates?$top=200&api-version={API_VERSION}")
+    changes: list[tuple[str, str]] = []
+    for update in updates.get("value", []):
+        fields = update.get("fields") or {}
+        state = fields.get("System.State")
+        if not isinstance(state, dict) or "newValue" not in state:
+            continue
+        changed = fields.get("System.ChangedDate")
+        day = _local_date(changed.get("newValue") if isinstance(changed, dict) else update.get("revisedDate"))
+        if day is None or not from_date <= day <= to_date:
+            continue
+        changes.append((str(state.get("oldValue") or ""), str(state.get("newValue") or "")))
+    if not changes:
+        return None
+    return (changes[0][0], changes[-1][1])
+
+
+def _weekly_markdown(report: dict[str, Any]) -> str:
+    """Render a weekly-report result as Markdown, one ## section per area path."""
+    def link(item: dict[str, Any]) -> str:
+        title = item["title"].replace("[", "\\[").replace("]", "\\]")
+        return f"[#{item['id']}]({item['url']}) {title}"
+
+    lines = [f"# Weekly report: {report['rangeLabel']}", ""]
+    for section in report["sections"]:
+        lines += [f"## {section['name']}", ""]
+        for heading, key in WEEKLY_SECTIONS:
+            items = section[key]
+            lines.append(f"### {heading}")
+            lines.append("")
+            if not items:
+                lines.append("- None")
+            for item in items:
+                lines.append(f"- {link(item)} ({_weekly_detail(key, item)})")
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _weekly_html(report: dict[str, Any]) -> str:
+    """Render a weekly-report result as simple HTML for pasting into an email."""
+    esc = html.escape
+    parts = [f"<h1>Weekly report: {esc(report['rangeLabel'])}</h1>"]
+    for section in report["sections"]:
+        parts.append(f"<h2>{esc(section['name'])}</h2>")
+        for heading, key in WEEKLY_SECTIONS:
+            items = section[key]
+            parts.append(f"<h3>{esc(heading)}</h3><ul>")
+            if not items:
+                parts.append("<li>None</li>")
+            for item in items:
+                parts.append(
+                    f"<li><a href=\"{esc(item['url'])}\">#{item['id']}</a> {esc(item['title'])} "
+                    f"({esc(_weekly_detail(key, item))})</li>"
+                )
+            parts.append("</ul>")
+    return "".join(parts)
+
+
+# (heading, section key) in report order.
+WEEKLY_SECTIONS = (
+    ("Completed", "completed"),
+    ("Progressed", "progressed"),
+    ("Blockers", "blocked"),
+    ("Next week", "upcoming"),
+)
+
+
+def _weekly_detail(key: str, item: dict[str, Any]) -> str:
+    """The parenthesized detail after an item in the weekly report, e.g. "Task, Active → Resolved"."""
+    kind = item["workItemType"] or "Item"
+    if key == "completed":
+        return f"{kind}, {item['state']} {_short_day(item['date'])}".rstrip()
+    if key == "progressed":
+        return f"{kind}, {item['fromState'] or 'Created'} → {item['state']}"
+    if key == "blocked":
+        since = _short_day(item["date"])
+        return f"{kind}, blocked since {since}" if since else f"{kind}, blocked"
+    return f"{kind}, {item['state']}"
+
+
+def _short_day(iso_day: str | None) -> str:
+    """ "2026-10-23" → "Oct 23", or "" when unset."""
+    if not iso_day:
+        return ""
+    day = dt.date.fromisoformat(iso_day)
+    return f"{day.strftime('%b')} {day.day}"
+
+
+def _range_label(from_date: dt.date, to_date: dt.date) -> str:
+    """ "Oct 19 – 25, 2026", "Sep 28 – Oct 4, 2026" or "Dec 29, 2025 – Jan 4, 2026"."""
+    if from_date.year != to_date.year:
+        return f"{_short_day(from_date.isoformat())}, {from_date.year} – {_short_day(to_date.isoformat())}, {to_date.year}"
+    if from_date.month != to_date.month:
+        return f"{_short_day(from_date.isoformat())} – {_short_day(to_date.isoformat())}, {to_date.year}"
+    if from_date == to_date:
+        return f"{_short_day(from_date.isoformat())}, {to_date.year}"
+    return f"{_short_day(from_date.isoformat())} – {to_date.day}, {to_date.year}"
+
+
+def cmd_weekly_report(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
+    """Build a status report for one person across one or more area paths (command: weekly-report).
+
+    For each --area-path (child areas included; ADO_AREA_PATH when none is given),
+    one WIQL query finds the person's items that changed since --from-date or are
+    still open, and their fields are batch-fetched. Items are then sorted into:
+
+    - completed: in --done-states, with a completion date (Closed Date, else
+      Resolved Date) in [--from-date, --to-date].
+    - progressed: not done or blocked, with a state change in the range. The
+      item's updates are read to get the state it started the week in.
+    - blocked: in --blocked-states now, whenever that happened.
+    - upcoming: up to --next-count other open items, started ones first, then by
+      priority and most recently changed.
+
+    Dates are compared as local calendar days. Without --assigned-to or
+    ADO_ASSIGNEE, items are those assigned to the PAT's owner (@Me); with a name,
+    the assignee is matched loosely on the client (see _assignee_matches).
+
+    The report is returned as Markdown and HTML, and the Markdown is also written
+    to --output when given.
+
+    Returns:
+        {"fromDate", "toDate", "rangeLabel", "assignee", "areaPaths", "sections":
+        [{"areaPath", "name", "completed", "progressed", "blocked", "upcoming"}],
+        "markdown", "html", "output"}. Each item has {"id", "title",
+        "workItemType", "state", "fromState", "date", "priority", "iteration",
+        "url"}; "date" (YYYY-MM-DD) is the completion day for completed items and
+        the day the state last changed otherwise.
+
+    Raises:
+        CliError: VALIDATION_ERROR for bad dates, --to-date before --from-date,
+            empty state lists, a negative --next-count or no area path.
+    """
+    today = dt.date.today()
+    to_date = dt.date.fromisoformat(_validate_to_date(args.to_date)) if args.to_date else today
+    from_date = (
+        dt.date.fromisoformat(_validate_from_date(args.from_date)) if args.from_date else to_date - dt.timedelta(days=6)
+    )
+    if to_date < from_date:
+        raise CliError("VALIDATION_ERROR", "--to-date must be on or after --from-date")
+    done_states = _split_states(args.done_states, flag="done-states")
+    blocked_states = _split_states(args.blocked_states, flag="blocked-states")
+    if args.next_count < 0:
+        raise CliError("VALIDATION_ERROR", "--next-count cannot be negative")
+
+    area_paths = [path.strip() for path in (args.area_paths or []) if path.strip()]
+    if not area_paths and client.cfg.area_path:
+        area_paths = [client.cfg.area_path]
+    if not area_paths:
+        raise CliError("VALIDATION_ERROR", "--area-path is required (or set ADO_AREA_PATH in .env)")
+
+    assignee = (args.assigned_to if args.assigned_to is not None else client.cfg.assignee).strip()
+    done_keys = {s.casefold() for s in done_states}
+    blocked_keys = {s.casefold() for s in blocked_states}
+    not_started_keys = {s.casefold() for s in WEEKLY_NOT_STARTED_STATES}
+    # A day early, since WIQL compares UTC days and the range is in local days.
+    since_iso = (from_date - dt.timedelta(days=1)).isoformat()
+
+    requested_fields = [
+        "System.Id",
+        "System.Title",
+        "System.State",
+        "System.WorkItemType",
+        "System.AssignedTo",
+        "System.IterationPath",
+        "System.ChangedDate",
+        "Microsoft.VSTS.Common.ClosedDate",
+        "Microsoft.VSTS.Common.ResolvedDate",
+        "Microsoft.VSTS.Common.StateChangeDate",
+        "Microsoft.VSTS.Common.Priority",
+    ]
+
+    sections: list[dict[str, Any]] = []
+    for area_path in area_paths:
+        wiql = _build_weekly_report_wiql(client.cfg.project, area_path, since_iso, done_states, use_me=not assignee)
+        wiql_result = client.request("POST", f"wit/wiql?api-version={API_VERSION}", payload={"query": wiql})
+        ids = [int(item["id"]) for item in wiql_result.get("workItems", []) if item.get("id") is not None]
+
+        raw_items: list[dict[str, Any]] = []
+        for id_chunk in _chunked(ids, 200):
+            batch_payload = {"ids": id_chunk, "fields": requested_fields, "errorPolicy": "Omit"}
+            batch_result = client.request("POST", f"wit/workitemsbatch?api-version={API_VERSION}", payload=batch_payload)
+            raw_items.extend(batch_result.get("value", []))
+
+        completed: list[tuple[str, dict[str, Any]]] = []
+        progressed: list[tuple[str, dict[str, Any]]] = []
+        blocked: list[tuple[str, dict[str, Any]]] = []
+        open_items: list[tuple[str, dict[str, Any]]] = []
+        for raw in raw_items:
+            fields = raw.get("fields", {})
+            if assignee and not _assignee_matches(assignee, _normalize_identity_name(fields.get("System.AssignedTo"))):
+                continue
+            state = _sanitize_rich_text(fields.get("System.State"))
+            state_key = state.casefold()
+            priority = fields.get("Microsoft.VSTS.Common.Priority")
+            iteration = str(fields.get("System.IterationPath") or "")
+            state_changed = _local_date(fields.get("Microsoft.VSTS.Common.StateChangeDate"))
+            item: dict[str, Any] = {
+                "id": raw.get("id"),
+                "title": _sanitize_rich_text(fields.get("System.Title")),
+                "workItemType": _sanitize_rich_text(fields.get("System.WorkItemType")),
+                "state": state,
+                "fromState": None,
+                "date": state_changed.isoformat() if state_changed else None,
+                "priority": int(priority) if isinstance(priority, (int, float)) else None,
+                "iteration": iteration.split("\\")[-1] if iteration else None,
+                "url": build_work_item_url(client.cfg, raw.get("id", "")),
+            }
+
+            if state_key in done_keys:
+                finished = _local_date(
+                    fields.get("Microsoft.VSTS.Common.ClosedDate") or fields.get("Microsoft.VSTS.Common.ResolvedDate")
+                )
+                if finished and from_date <= finished <= to_date:
+                    item["date"] = finished.isoformat()
+                    completed.append((item["date"], item))
+                continue
+            if state_key in blocked_keys:
+                blocked.append((item["date"] or "", item))
+                continue
+
+            if state_changed and from_date <= state_changed <= to_date:
+                transition = _state_transitions(client, int(raw["id"]), from_date, to_date)
+                if transition and transition[0] != transition[1]:
+                    item["fromState"] = transition[0]
+                    progressed.append((item["date"] or "", item))
+
+            open_items.append((str(fields.get("System.ChangedDate") or ""), item))
+
+        completed.sort(key=lambda pair: pair[0], reverse=True)
+        progressed.sort(key=lambda pair: pair[0], reverse=True)
+        blocked.sort(key=lambda pair: pair[0])
+        # Started first, then priority (1 is highest, unset last), then most recently changed.
+        open_items.sort(key=lambda pair: pair[0], reverse=True)
+        open_items.sort(key=lambda pair: (pair[1]["state"].casefold() in not_started_keys, pair[1]["priority"] or 99))
+        sections.append(
+            {
+                "areaPath": area_path,
+                "name": area_path.rstrip("\\").split("\\")[-1],
+                "completed": [item for _, item in completed],
+                "progressed": [item for _, item in progressed],
+                "blocked": [item for _, item in blocked],
+                "upcoming": [item for _, item in open_items[: args.next_count]],
+            }
+        )
+
+    report: dict[str, Any] = {
+        "fromDate": from_date.isoformat(),
+        "toDate": to_date.isoformat(),
+        "rangeLabel": _range_label(from_date, to_date),
+        "assignee": assignee or "@Me",
+        "areaPaths": area_paths,
+        "sections": sections,
+    }
+    report["markdown"] = _weekly_markdown(report)
+    report["html"] = _weekly_html(report)
+    report["output"] = None
+    if args.output:
+        output_dir = os.path.dirname(args.output)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(report["markdown"])
+        report["output"] = args.output
+    return report
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Define the argparse command line: one subparser per command, each with its flags.
 
@@ -1595,6 +1926,16 @@ def build_parser() -> argparse.ArgumentParser:
     export_mods.add_argument("--from-date", required=True, help="Start date in YYYY-MM-DD format")
     export_mods.add_argument("--to-date", default=None, help="End date in YYYY-MM-DD format")
 
+    weekly = subparsers.add_parser("weekly-report", help="Completed, progressed, blocked and next items across area paths")
+    weekly.add_argument("--area-path", dest="area_paths", action="append", default=None, help="Area path, child areas included (can be specified multiple times). Defaults to ADO_AREA_PATH")
+    weekly.add_argument("--from-date", default=None, help="Start date in YYYY-MM-DD format (inclusive). Default: 6 days before --to-date")
+    weekly.add_argument("--to-date", default=None, help="End date in YYYY-MM-DD format (inclusive). Default: today")
+    weekly.add_argument("--assigned-to", dest="assigned_to", default=None, help="Assigned-to display name. Defaults to ADO_ASSIGNEE, then the token's owner")
+    weekly.add_argument("--done-states", default="Closed,Resolved,Done", help="Comma-separated completed states (default: Closed,Resolved,Done)")
+    weekly.add_argument("--blocked-states", default="Blocked", help="Comma-separated blocked states (default: Blocked)")
+    weekly.add_argument("--next-count", type=int, default=3, help="Open items to list under Next week, per area path (default: 3)")
+    weekly.add_argument("--output", default="", help="Also write the Markdown report to this path")
+
     return parser
 
 
@@ -1642,6 +1983,8 @@ def main(argv: list[str]) -> int:
             result = cmd_export_closed_stories(args, client)
         elif args.command == "export-modifications":
             result = cmd_export_modifications(args, client)
+        elif args.command == "weekly-report":
+            result = cmd_weekly_report(args, client)
         else:
             raise CliError("VALIDATION_ERROR", f"Unknown command: {args.command}")
 

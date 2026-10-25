@@ -24,7 +24,7 @@ talks to the Azure DevOps REST API. You can use either one on its own.
 | **Current Sprint** | The team's current iteration: dates and days left, an editable sprint goal, closed and active story counts, and the closed stories with **Copy as Markdown**. |
 | **Work Items** | The items you've opened, created or updated (type an ID to open another) beside an inline editor. Changed fields are highlighted until you **Save** (⌘S) or **Discard**. Post comments, open an item in the browser, or delete it. |
 | **Sprints** | Every iteration, grouped Current / Upcoming / Past, each shown like the home view. |
-| **Reports** | Export closed stories or a user's modifications for a date range, and reveal recent exports in Finder. |
+| **Reports** | Build a **Weekly Report** across several area paths (completed, progressed, blockers and what's next) and copy it into an email or open it in Mail. Export closed stories or a user's modifications for a date range, and reveal recent exports in Finder. |
 
 Also:
 
@@ -110,6 +110,7 @@ python3 ado_cli.py update --id=1234 --state=Active --story-points=3
 python3 ado_cli.py comment --id=1234 --body="Deployed to staging"
 python3 ado_cli.py iteration-list --timeframe=current
 python3 ado_cli.py export-closed-stories --from-date=2026-01-01 --output="$PWD/closed.json"
+python3 ado_cli.py weekly-report --area-path='Proj\Team A' --area-path='Proj\Team B' | jq -r .result.markdown
 python3 ado_cli.py --help     # every command; add a command name for its flags
 ```
 

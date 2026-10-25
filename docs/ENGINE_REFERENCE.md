@@ -113,6 +113,7 @@ Notes:
 |---|---|---|---|
 | `export-closed-stories` | `--from-date` (`2025-01-01`), `--to-date`, `--work-item-type` (`User Story`), `--states` (`Closed,Resolved`), `--assigned-to` (or `ADO_ASSIGNEE`), `--output` | `count, output, fromDate, toDate, workItemType, states, assignee` | `ExportClosedResult` |
 | `export-modifications` | `--user` (required), `--from-date` (required), `--to-date` | `user, fromDate, toDate, count, items[{id, revision, changedDate, changedBy, title, state, workItemType, url}]` | `ModificationsResult` |
+| `weekly-report` | `--area-path`… (or `ADO_AREA_PATH`), `--from-date` (6 days before `--to-date`), `--to-date` (today), `--assigned-to` (or `ADO_ASSIGNEE`, else the token's owner), `--done-states` (`Closed,Resolved,Done`), `--blocked-states` (`Blocked`), `--next-count` (`3`), `--output` | `fromDate, toDate, rangeLabel, assignee, areaPaths, sections[{areaPath, name, completed, progressed, blocked, upcoming}], markdown, html, output` | `WeeklyReportResult` |
 
 Notes:
 - **`export-closed-stories` writes a file.** The items are only in the file at `output`, not in `result`.
@@ -126,6 +127,20 @@ Notes:
 - **`export-modifications` writes nothing.** Items come back in `result`.
   - There is one item per revision, so the same work item can appear several times. `CLIRunner`'s `Modification.id` already combines id, revision and date.
   - It downloads every revision in the project for the range, so long ranges are slow. Show progress and avoid running it automatically.
+
+- **`weekly-report`** builds a status report for one person, with one section per `--area-path` (repeat the flag;
+  child areas are included). Each section has four lists of items `{id, title, workItemType, state, fromState, date,
+  priority, iteration, url}`:
+  - `completed`: in `--done-states`, with a Closed Date (else Resolved Date) in the range. `date` is that day.
+  - `progressed`: not done or blocked, and the state changed in the range. `fromState` is the state before the first
+    change in the range (`""` if the item was created in it). This reads each candidate's `updates`, one call per item.
+  - `blocked`: in `--blocked-states` now, however long ago. `date` is the day the state last changed.
+  - `upcoming`: up to `--next-count` other open items: started ones before `New`/`Proposed`/`To Do`/`Approved`, then
+    by priority, then most recently changed. Items can also be in `progressed`.
+  - Dates are compared as local calendar days on the machine running the engine. `Removed` items are skipped.
+  - Without `--assigned-to` or `ADO_ASSIGNEE` the query uses `@Me`, the token's owner. A name is matched loosely, like
+    `export-closed-stories`.
+  - `markdown` and `html` are the rendered report. `--output` also writes the Markdown to that path.
 
 ## Adding a new command
 
