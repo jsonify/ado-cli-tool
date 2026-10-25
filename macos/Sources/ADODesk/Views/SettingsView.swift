@@ -10,6 +10,8 @@ struct SettingsView: View {
                 .tabItem { Label("Defaults", systemImage: "slider.horizontal.3") }
             EngineSettings()
                 .tabItem { Label("Engine", systemImage: "terminal") }
+            UpdateSettings()
+                .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
         .frame(width: 580)
         .padding(20)
@@ -148,6 +150,28 @@ private struct EngineSettings: View {
                 verifyOK = false
                 verifyMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+private struct UpdateSettings: View {
+    @EnvironmentObject private var settings: SettingsStore
+
+    var body: some View {
+        Form {
+            LabeledContent("Version") {
+                Text(Updater.versionLine(Bundle.main.infoDictionary))
+                    .textSelection(.enabled)
+            }
+            Toggle("Check for updates automatically", isOn: $settings.checkForUpdates)
+            HStack {
+                Button("Check Now") { Updater.check(userInitiated: true) }
+                Spacer()
+            }
+            Text("ADO Desk looks for a new release on GitHub a minute after it opens and then once a day. Updates are "
+                + "checked against the release's checksum and certificate before they replace the app.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

@@ -18,6 +18,7 @@ final class SettingsStore: ObservableObject {
         static let scriptPath = "engine.scriptPath"
         static let envFile = "engine.envFile"
         static let sslCertFile = "engine.sslCertFile"
+        static let checkForUpdates = "updates.check"
     }
 
     private let defaults: UserDefaults
@@ -32,6 +33,13 @@ final class SettingsStore: ObservableObject {
     @Published var scriptPath: String { didSet { defaults.set(scriptPath, forKey: Keys.scriptPath) } }
     @Published var envFile: String { didSet { defaults.set(envFile, forKey: Keys.envFile) } }
     @Published var sslCertFile: String { didSet { defaults.set(sslCertFile, forKey: Keys.sslCertFile) } }
+    /// Settings → Updates → Check for updates automatically: a check a minute after launch and then daily.
+    @Published var checkForUpdates: Bool {
+        didSet {
+            defaults.set(checkForUpdates, forKey: Keys.checkForUpdates)
+            Task { @MainActor in Updater.start() }
+        }
+    }
     @Published private(set) var hasToken: Bool
 
     init(defaults: UserDefaults = .standard) {
@@ -46,6 +54,7 @@ final class SettingsStore: ObservableObject {
         scriptPath = defaults.string(forKey: Keys.scriptPath) ?? ""
         envFile = defaults.string(forKey: Keys.envFile) ?? ""
         sslCertFile = defaults.string(forKey: Keys.sslCertFile) ?? ""
+        checkForUpdates = defaults.object(forKey: Keys.checkForUpdates) as? Bool ?? true
         hasToken = Keychain.readToken() != nil
     }
 

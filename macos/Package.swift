@@ -9,5 +9,10 @@ let package = Package(
             name: "ADODesk",
             path: "Sources/ADODesk"
         ),
+        .testTarget(
+            name: "ADODeskTests",
+            dependencies: ["ADODesk"],
+            path: "Tests/ADODeskTests"
+        ),
     ]
 )
