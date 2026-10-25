@@ -8,10 +8,18 @@ CONFIG="${CONFIG:-release}"
 APP_NAME="ADO Desk"
 EXECUTABLE="ADODesk"
 BUNDLE_ID="${ADODESK_BUNDLE_ID:-com.jsonify.adodesk}"
-# Marketing version (About, Finder). Scripts/release.sh sets it from --version or the git tag.
-VERSION="${ADODESK_VERSION:-0.1.0}"
-# Build number: the commit, so you can tell which one is actually running.
-BUILD=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
+# Marketing version (About, Finder, the updater): ADODESK_VERSION (Scripts/release.sh sets it from --version or the
+# git tag), else the newest v* tag, else ../version.txt, which release-please keeps current when its release PR is
+# merged (.github/workflows/release-please.yml).
+TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+VERSION="${ADODESK_VERSION:-${TAG#v}}"
+VERSION="${VERSION:-$(tr -d '[:space:]' < ../version.txt)}"
+# Build number: the count of commits up to this one, so it goes up with every commit (CI needs the full history).
+BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+# Shown in Settings -> Updates next to the version, so you can tell which commit is actually running. "+" marks a
+# build with uncommitted changes.
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
+if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then COMMIT="$COMMIT+"; fi
 ENGINE="../ado_cli.py"
 
 if [[ ! -f "$ENGINE" ]]; then
@@ -55,6 +63,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${BUILD}</string>
+    <key>ADODeskCommit</key>
+    <string>${COMMIT}</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSApplicationCategoryType</key>
@@ -87,6 +97,6 @@ else
 fi
 codesign --force --sign "$IDENTITY" "$APP"
 [ "$IDENTITY" = "-" ] && SIGNED="ad-hoc" || SIGNED="\"$IDENTITY\""
-echo "Built $(pwd)/$APP $VERSION at $BUILD (signed with $SIGNED)"
+echo "Built $(pwd)/$APP $VERSION ($BUILD, $COMMIT) (signed with $SIGNED)"
 # Pass --run to launch it right away.
 if [ "${1:-}" = "--run" ]; then open "$APP"; fi

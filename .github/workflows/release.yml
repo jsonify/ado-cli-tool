@@ -1,21 +1,44 @@
 name: Release
 
-# Runs only when a version tag is pushed (git tag v0.2.0 && git push origin v0.2.0), never on normal
-# pushes or pull requests. Builds, signs with Developer ID, notarises and staples via
-# macos/Scripts/release.sh, then attaches the DMG and zip to a draft GitHub release for you to publish.
+# Runs when release-please.yml creates a release (merging its release PR), or when a version tag is pushed by
+# hand (git tag v0.2.0 && git push origin v0.2.0); never on normal pushes or pull requests. Builds, signs (and,
+# with Developer ID, notarises and staples) via macos/Scripts/release.sh, then attaches the DMG and zip to the GitHub release.
 #
-# Repository secrets it needs (Settings -> Secrets and variables -> Actions):
+# Signing: with the five Developer ID secrets below (paid Apple Developer Program) the app is signed with Developer
+# ID and notarised, so it opens anywhere without warnings. Without them, the two SELF_SIGNED_* secrets give a free
+# release instead: signed with your self-signed "ADO Desk Dev" certificate, not notarised. Gatekeeper calls a browser
+# download of it "damaged", so people install with macos/Scripts/install.sh or the in-app updater (the release notes say
+# how). With neither, it fails.
+#
+# Developer ID secrets (Settings -> Secrets and variables -> Actions):
 #   DEVELOPER_ID_P12_BASE64     base64 of the "Developer ID Application" certificate + private key (.p12)
 #   DEVELOPER_ID_P12_PASSWORD   the password the .p12 was exported with
 #   NOTARY_API_KEY_BASE64       base64 of the App Store Connect API key file (AuthKey_XXXX.p8)
 #   NOTARY_API_KEY_ID           that key's ID
 #   NOTARY_API_ISSUER           the issuer ID shown above the key list
+#
+# Self-signed secrets (see macos/README.md "Releases"):
+#   SELF_SIGNED_P12_BASE64      base64 of the "ADO Desk Dev" certificate + private key exported from Keychain Access
+#   SELF_SIGNED_P12_PASSWORD    the password it was exported with
 on:
   push:
     tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build, e.g. v0.2.0
+        required: true
+        type: string
+  # Actions -> Release -> Run workflow: rebuild a release whose build failed, without a new version.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to rebuild, e.g. v0.2.0
+        required: true
+        type: string
 
 permissions:
-  contents: write   # create the draft release
+  contents: write   # create or add to the GitHub release
 
 defaults:
   run:
@@ -24,9 +47,12 @@ defaults:
 jobs:
   release:
     runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     timeout-minutes: 60
     steps:
-      - name: Check secrets
+      - name: Pick the signing mode
+        id: mode
         working-directory: .
         env:
           P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
@@ -34,6 +60,8 @@ jobs:
           KEY: ${{ secrets.NOTARY_API_KEY_BASE64 }}
           KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
           ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+          SELF_P12: ${{ secrets.SELF_SIGNED_P12_BASE64 }}
+          SELF_P12_PASSWORD: ${{ secrets.SELF_SIGNED_P12_PASSWORD }}
         run: |
           missing=""
           [ -n "$P12" ] || missing="$missing DEVELOPER_ID_P12_BASE64"
@@ -41,21 +69,41 @@ jobs:
           [ -n "$KEY" ] || missing="$missing NOTARY_API_KEY_BASE64"
           [ -n "$KEY_ID" ] || missing="$missing NOTARY_API_KEY_ID"
           [ -n "$ISSUER" ] || missing="$missing NOTARY_API_ISSUER"
-          if [ -n "$missing" ]; then
-            echo "::error::Release secrets not set:$missing (see the comment at the top of .github/workflows/release.yml)"
+          if [ -z "$missing" ]; then
+            echo "Developer ID: signed and notarised."
+            echo "mode=developer-id" >> "$GITHUB_OUTPUT"
+          elif [ -n "$SELF_P12" ] && [ -n "$SELF_P12_PASSWORD" ]; then
+            echo "No Developer ID secrets (missing:$missing): self-signed, not notarised."
+            echo "mode=self-signed" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No signing secrets. Set SELF_SIGNED_P12_BASE64 and SELF_SIGNED_P12_PASSWORD for a free self-signed release, or the Developer ID ones (missing:$missing). See the comment at the top of .github/workflows/release.yml."
             exit 1
           fi
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0   # all commits and tags: build_app.sh takes the version and build number from them
+      # A rebuild uses release.sh from the commit it was started on, so fixes to it apply to an older tag. Marked
+      # unchanged so the build isn't stamped as having uncommitted changes.
+      - name: Use the current release script
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git show "$GITHUB_SHA:macos/Scripts/release.sh" > Scripts/release.sh
+          git update-index --assume-unchanged Scripts/release.sh
       - name: Select newest Xcode
         run: |
           NEWEST=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
           sudo xcode-select -s "$NEWEST"
           xcodebuild -version
+      # The app bundles ado_cli.py, so a script that doesn't compile or start is a broken build.
       - name: Engine check
         run: |
           python3 -m py_compile ../ado_cli.py
           python3 ../ado_cli.py --help > /dev/null
+      - name: Unit tests (warnings are errors)
+        run: swift test -Xswiftc -warnings-as-errors
       - name: Import signing certificate into a temporary keychain
+        if: steps.mode.outputs.mode == 'developer-id'
         env:
           P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
@@ -77,27 +125,89 @@ jobs:
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/developer-id.p12"
           echo "ADODESK_KEYCHAIN=$KC" >> "$GITHUB_ENV"
+      # codesign only signs with an identity the Mac trusts, and a CI runner can't be made to trust a self-signed
+      # certificate without someone at the keyboard. rcodesign (github.com/indygreg/apple-platform-rs) signs straight
+      # from the .p12 instead; the signature is the same kind codesign makes with that certificate on your Mac.
+      - name: Set up rcodesign with the self-signed certificate
+        if: steps.mode.outputs.mode == 'self-signed'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          P12: ${{ secrets.SELF_SIGNED_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SELF_SIGNED_P12_PASSWORD }}
+        run: |
+          DIR="$RUNNER_TEMP/rcodesign"; mkdir -p "$DIR"
+          # Pinned: a signing tool shouldn't change under a release without a review. Bump it here on purpose.
+          RELEASE=apple-codesign/0.29.0
+          gh release download "$RELEASE" --repo indygreg/apple-platform-rs --pattern '*macos-universal.tar.gz' --dir "$DIR"
+          tar -xzf "$DIR"/*.tar.gz -C "$DIR"
+          BIN=$(find "$DIR" -type f -name rcodesign | head -1)
+          [ -n "$BIN" ] || { echo "::error::rcodesign not found in the $RELEASE download."; exit 1; }
+          chmod +x "$BIN"; "$BIN" --version
+          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/self-signed.p12"
+          printf '%s' "$P12_PASSWORD" > "$RUNNER_TEMP/self-signed.pass"
+          echo "ADODESK_SIGN_P12=$RUNNER_TEMP/self-signed.p12" >> "$GITHUB_ENV"
+          echo "ADODESK_SIGN_P12_PASSWORD_FILE=$RUNNER_TEMP/self-signed.pass" >> "$GITHUB_ENV"
       - name: Build, sign, notarise, package
         env:
+          MODE: ${{ steps.mode.outputs.mode }}
           ADODESK_STRICT: "1"
           ADODESK_NOTARY_KEY: ${{ runner.temp }}/notary-key.p8
           ADODESK_NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
           ADODESK_NOTARY_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
-        run: ./Scripts/release.sh --version "${GITHUB_REF_NAME#v}"
+        run: |
+          if [ "$MODE" = self-signed ]; then
+            ./Scripts/release.sh --version "${TAG#v}" --self-signed
+          else
+            ./Scripts/release.sh --version "${TAG#v}"
+          fi
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ADO-Desk-${{ github.ref_name }}
+          name: ADO-Desk-${{ env.TAG }}
           path: macos/build/release/
-      - name: Create draft GitHub release
+      # release-please has already made the release (with the changelog) for its tags: add the files to it.
+      # A tag pushed by hand gets a draft release for you to publish.
+      - name: Attach to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" build/release/* \
-            --draft --verify-tag --title "ADO Desk ${GITHUB_REF_NAME#v}" --generate-notes
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/release/* --clobber
+          else
+            gh release create "$TAG" build/release/* \
+              --draft --verify-tag --title "ADO Desk ${TAG#v}" --generate-notes
+          fi
+      - name: Add install notes for a self-signed build
+        if: steps.mode.outputs.mode == 'self-signed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A rebuild replaces the note an earlier build added instead of adding a second one.
+          BODY=$(gh release view "$TAG" --json body -q .body)
+          {
+            printf '%s\n' "${BODY%%$'\n---\n'\*\*Installing:*}"
+            cat <<'NOTE'
+
+          ---
+          **Installing:** run this in Terminal:
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/jsonify/ado-cli-tool/main/macos/Scripts/install.sh | bash
+          ```
+
+          Once installed, ADO Desk updates itself (**ADO Desk → Check for Updates…**). This build is signed
+          with ADO Desk's own certificate, not an Apple Developer ID, so macOS calls a copy downloaded in a browser
+          "damaged". If you use the DMG or zip below, drag ADO Desk to Applications and run
+          `xattr -dr com.apple.quarantine "/Applications/ADO Desk.app"` once before opening it. Every release has
+          the same certificate, so Keychain access to your token carries over to updates.
+          NOTE
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
       - name: Clean up keychain and key
         if: always()
         working-directory: .
         run: |
           [ -n "${ADODESK_KEYCHAIN:-}" ] && security delete-keychain "$ADODESK_KEYCHAIN" || true
-          rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/developer-id.p12"
+          rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/self-signed.p12" "$RUNNER_TEMP/self-signed.pass"

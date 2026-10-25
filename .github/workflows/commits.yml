@@ -1,0 +1,35 @@
+name: Commit messages
+
+# release-please picks the next version from commit messages, so every commit in a PR uses Conventional Commits:
+#   type(scope): summary      e.g. "fix(app): keep the sprint filter after a refresh"
+# fix -> patch release, feat -> minor, "type!:" or a "BREAKING CHANGE:" footer -> major. docs, test, refactor,
+# perf, build, ci, chore, style and revert don't start a release by themselves (perf is listed in the changelog).
+on:
+  pull_request:
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Check commit subjects
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          pattern='^(feat|fix|perf|refactor|revert|docs|style|test|build|ci|chore)(\([a-z0-9 ,/_-]+\))?!?: .+'
+          bad=0
+          while IFS= read -r line; do
+            sha=${line%% *}; subject=${line#* }
+            if ! printf '%s\n' "$subject" | grep -qE "$pattern"; then
+              echo "::error::$sha \"$subject\" is not a Conventional Commit (e.g. \"fix(app): ...\" or \"feat: ...\")."
+              bad=1
+            fi
+          done < <(git log --no-merges --format='%h %s' "$BASE..HEAD")
+          if [ "$bad" = 1 ]; then
+            echo "Reword them (git rebase -i, then push --force-with-lease) before merging; see the comment at the top of this workflow." >&2
+            exit 1
+          fi
+          echo "All commit subjects are Conventional Commits."

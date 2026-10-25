@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # all commits and tags: build_app.sh takes the version and build number from them
       # Use the newest Xcode on the runner: newer compilers add warnings the default one doesn't report.
       - name: Select newest Xcode
         run: |
@@ -38,6 +40,8 @@ jobs:
         run: |
           python3 -m py_compile ../ado_cli.py
           python3 ../ado_cli.py --help > /dev/null
+      - name: Unit tests (warnings are errors)
+        run: swift test -Xswiftc -warnings-as-errors
       - name: Build app (warnings are errors)
         run: ./Scripts/build_app.sh
         env:

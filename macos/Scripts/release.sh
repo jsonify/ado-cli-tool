@@ -23,6 +23,16 @@ Options:
   --format F          dmg, zip or both (default: both).
   --skip-notarize     Sign and package only; no Apple credentials needed. Outputs are named
                       *-unnotarized and Gatekeeper will still block them on other Macs.
+  --self-signed       Release without a paid Apple Developer account: sign with a self-signed
+                      certificate (ADODESK_SIGN_IDENTITY, default "ADO Desk Dev" from
+                      Scripts/make_dev_cert.sh); no notarisation or hardened runtime. The same certificate on every
+                      release keeps Keychain access to the token across updates, but Gatekeeper
+                      calls a browser download "damaged": people install with Scripts/install.sh or
+                      the in-app updater, which skip it. The DMG is left unsigned: Gatekeeper rejects a disk image
+                      signed with a self-signed certificate outright. With ADODESK_SIGN_P12
+                      (the certificate as a .p12 file) and
+                      ADODESK_SIGN_P12_PASSWORD_FILE, it signs with rcodesign instead of codesign,
+                      which doesn't need the certificate trusted on this Mac (used on CI).
   -h, --help          Show this help.
 
 Signing identity (from your keychain, never the repo):
@@ -55,6 +65,7 @@ step() { echo; echo "==> $*"; }
 VERSION="${ADODESK_VERSION:-}"
 FORMAT=both
 NOTARIZE=1
+SELF_SIGNED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) [ $# -ge 2 ] || die "--version needs a value, e.g. --version 0.2.0"; VERSION="$2"; shift 2 ;;
@@ -62,6 +73,7 @@ while [ $# -gt 0 ]; do
     --format) [ $# -ge 2 ] || die "--format needs dmg, zip or both"; FORMAT="$2"; shift 2 ;;
     --format=*) FORMAT="${1#*=}"; shift ;;
     --skip-notarize|--skip-notarise) NOTARIZE=0; shift ;;
+    --self-signed) SELF_SIGNED=1; NOTARIZE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; echo >&2; die "unknown option: $1" ;;
   esac
@@ -90,27 +102,54 @@ if [ -n "$KEYCHAIN" ]; then
 fi
 # find-identity takes the keychain as a trailing argument; codesign takes --keychain.
 IDENTITIES=$(security find-identity -v -p codesigning ${KEYCHAIN:+"$KEYCHAIN"} || true)
-IDENTITY="${ADODESK_DEVELOPER_ID:-}"
-if [ -z "$IDENTITY" ]; then
-  DEV_IDS=$(printf '%s\n' "$IDENTITIES" | grep -o '"Developer ID Application: [^"]*"' | tr -d '"' | sort -u || true)
-  COUNT=$(printf '%s' "$DEV_IDS" | grep -c . || true)
-  if [ "$COUNT" -eq 0 ]; then
-    die "no \"Developer ID Application\" certificate in the keychain.
+P12="${ADODESK_SIGN_P12:-}"
+if [ "$SELF_SIGNED" = 1 ] && [ -n "$P12" ]; then
+  [ -f "$P12" ] || die "ADODESK_SIGN_P12=\"$P12\" is not a file."
+  [ -f "${ADODESK_SIGN_P12_PASSWORD_FILE:-}" ] || die "ADODESK_SIGN_P12_PASSWORD_FILE must name the file holding the .p12's password."
+  command -v rcodesign >/dev/null || die "rcodesign not found (github.com/indygreg/apple-platform-rs); it signs from ADODESK_SIGN_P12."
+  # macOS only accepts a code signature from a certificate made for code signing. One made for e-mail (Keychain
+  # Access's Certificate Assistant defaults to S/MIME) signs without complaint, but macOS then rejects the app
+  # everywhere: Gatekeeper calls it damaged and Keychain access is asked for again every time.
+  CERT=$( (openssl pkcs12 -in "$P12" -passin "file:$ADODESK_SIGN_P12_PASSWORD_FILE" -nokeys -clcerts 2>/dev/null \
+    || openssl pkcs12 -legacy -in "$P12" -passin "file:$ADODESK_SIGN_P12_PASSWORD_FILE" -nokeys -clcerts 2>/dev/null) \
+    | openssl x509 -noout -text 2>/dev/null || true)
+  [ -n "$CERT" ] || die "couldn't read the certificate in ADODESK_SIGN_P12 (wrong password?)."
+  printf '%s\n' "$CERT" | grep -A1 'Extended Key Usage' | grep -q 'Code Signing' \
+    || die "the certificate in ADODESK_SIGN_P12 isn't a code-signing certificate (its extended key usage is
+       \"$(printf '%s\n' "$CERT" | grep -A1 'Extended Key Usage' | tail -1 | xargs)\"), so macOS would reject the app.
+       Create one with Scripts/make_dev_cert.sh and export that as the .p12."
+  IDENTITY="$(basename "$P12") (rcodesign)"
+elif [ "$SELF_SIGNED" = 1 ]; then
+  # A self-signed certificate may not be trusted on this Mac, and then find-identity's code-signing policy leaves
+  # it out: look among all identities and certificates (by name or SHA-1 hash) and let codesign be the judge.
+  IDENTITY="${ADODESK_SIGN_IDENTITY:-ADO Desk Dev}"
+  ALL_IDENTITIES=$( (security find-identity ${KEYCHAIN:+"$KEYCHAIN"}; security find-certificate -a -Z ${KEYCHAIN:+"$KEYCHAIN"}) 2>/dev/null || true)
+  printf '%s\n' "$ALL_IDENTITIES" | grep -qF "$IDENTITY" \
+    || die "signing identity \"$IDENTITY\" not found. Create it once with Scripts/make_dev_cert.sh, or name yours
+       with ADODESK_SIGN_IDENTITY."
+else
+  IDENTITY="${ADODESK_DEVELOPER_ID:-}"
+  if [ -z "$IDENTITY" ]; then
+    DEV_IDS=$(printf '%s\n' "$IDENTITIES" | grep -o '"Developer ID Application: [^"]*"' | tr -d '"' | sort -u || true)
+    COUNT=$(printf '%s' "$DEV_IDS" | grep -c . || true)
+    if [ "$COUNT" -eq 0 ]; then
+      die "no \"Developer ID Application\" certificate in the keychain.
        Create one at developer.apple.com -> Certificates (type: Developer ID Application) or in
        Xcode -> Settings -> Accounts -> Manage Certificates, then run this again.
        (\"ADO Desk Dev\" from make_dev_cert.sh is for local builds only; Apple won't notarise it.)"
-  elif [ "$COUNT" -gt 1 ]; then
-    die "several Developer ID Application identities found; pick one with ADODESK_DEVELOPER_ID:
+    elif [ "$COUNT" -gt 1 ]; then
+      die "several Developer ID Application identities found; pick one with ADODESK_DEVELOPER_ID:
 $(printf '%s\n' "$DEV_IDS" | sed 's/^/         /')"
-  fi
-  IDENTITY="$DEV_IDS"
-elif ! printf '%s\n' "$IDENTITIES" | grep -qF "$IDENTITY"; then
-  die "signing identity \"$IDENTITY\" (ADODESK_DEVELOPER_ID) is not a valid code-signing identity in the keychain.
+    fi
+    IDENTITY="$DEV_IDS"
+  elif ! printf '%s\n' "$IDENTITIES" | grep -qF "$IDENTITY"; then
+    die "signing identity \"$IDENTITY\" (ADODESK_DEVELOPER_ID) is not a valid code-signing identity in the keychain.
        Valid identities:
 $(printf '%s\n' "$IDENTITIES" | sed 's/^/         /')"
-fi
-if ! [[ "$IDENTITY" =~ ^[0-9A-Fa-f]{40}$ ]] && [[ "$IDENTITY" != "Developer ID Application:"* ]]; then
-  die "\"$IDENTITY\" is not a Developer ID Application identity; notarisation would reject it."
+  fi
+  if ! [[ "$IDENTITY" =~ ^[0-9A-Fa-f]{40}$ ]] && [[ "$IDENTITY" != "Developer ID Application:"* ]]; then
+    die "\"$IDENTITY\" is not a Developer ID Application identity; notarisation would reject it."
+  fi
 fi
 
 NOTARY_ARGS=()
@@ -178,16 +217,37 @@ ADODESK_SIGN_IDENTITY="-" ADODESK_VERSION="$VERSION" Scripts/build_app.sh
 [ -d "$APP" ] || die "build_app.sh did not produce $APP."
 VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")
 BUILD=$(plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")
-if [ "$NOTARIZE" = 1 ]; then NAME="ADO-Desk-$VERSION"; else NAME="ADO-Desk-$VERSION-unnotarized"; fi
+if [ "$NOTARIZE" = 1 ] || [ "$SELF_SIGNED" = 1 ]; then NAME="ADO-Desk-$VERSION"; else NAME="ADO-Desk-$VERSION-unnotarized"; fi
+# A self-signed build isn't notarised, which is the only reason for the hardened runtime and Apple's timestamp (whose
+# service only signs for Apple-issued certificates anyway), so it gets neither.
+if [ "$SELF_SIGNED" = 1 ]; then
+  SIGN_ARGS=(--timestamp=none); RUNTIME_NOTE=""
+else
+  SIGN_ARGS=(--timestamp --options runtime); RUNTIME_NOTE=" (hardened runtime)"
+fi
 
 # ---- Sign ----
-step "Signing with \"$IDENTITY\" (hardened runtime)"
+step "Signing with \"$IDENTITY\"$RUNTIME_NOTE"
 # Nested code is signed inside-out; the bundle has only the main executable (ado_cli.py is a sealed resource).
-codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
-  --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"
+# rcodesign signs straight from the .p12, without the keychain or trust (CI); otherwise codesign.
+rsign() { rcodesign sign --p12-file "$P12" --p12-password-file "$ADODESK_SIGN_P12_PASSWORD_FILE" "$@"; }
+if [ -n "$P12" ]; then
+  # The entitlements option has been renamed between rcodesign versions; use whichever this one has.
+  ENT_FLAG=$(rcodesign sign --help 2>&1 | grep -o -- '--entitlements-xml-[a-z]*' | head -1 || true)
+  rsign ${ENT_FLAG:+"$ENT_FLAG" "$ENTITLEMENTS"} "$APP"
+else
+  codesign --force "${SIGN_ARGS[@]}" --entitlements "$ENTITLEMENTS" \
+    --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"
+fi
+# What macOS itself checks before trusting the signature; a certificate not made for code signing fails here with
+# "Invalid Extended Key Usage for policy".
 codesign --verify --deep --strict --verbose=2 "$APP"
 codesign --display --verbose=2 "$APP" 2>&1 | grep -E '^(Authority|TeamIdentifier|Timestamp|flags|Identifier)=' || true
-codesign --display --verbose=2 "$APP" 2>&1 | grep -q 'flags=.*runtime' || die "hardened runtime flag missing from the signature."
+# What the Keychain keys access to the token to: the same certificate in every release keeps it.
+codesign --display --requirements - "$APP" 2>&1 | grep designated || true
+if [ "$SELF_SIGNED" = 0 ]; then
+  codesign --display --verbose=2 "$APP" 2>&1 | grep -q 'flags=.*runtime' || die "hardened runtime flag missing from the signature."
+fi
 
 # ---- Notarise the app, staple it ----
 if [ "$NOTARIZE" = 1 ]; then
@@ -212,7 +272,14 @@ if [ "$FORMAT" != zip ]; then
   ditto "$APP" "$STAGE/ADO Desk.app"
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -volname "ADO Desk $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$OUT/$NAME.dmg" >/dev/null
-  codesign --force --timestamp --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$OUT/$NAME.dmg"
+  # Gatekeeper checks a signed disk image when it is opened, and rejects one signed with a certificate Apple didn't
+  # issue ("Move to Trash", with no Open Anyway). Left unsigned it just mounts, and the app inside gets the usual
+  # Open Anyway prompt.
+  if [ "$SELF_SIGNED" = 1 ]; then
+    echo "Leaving the DMG unsigned (self-signed release)."
+  else
+    codesign --force "${SIGN_ARGS[0]}" --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$OUT/$NAME.dmg"
+  fi
   if [ "$NOTARIZE" = 1 ]; then
     step "Notarising the DMG"
     notarize "$OUT/$NAME.dmg"
@@ -236,6 +303,8 @@ echo
 echo "Release $VERSION (build $BUILD) in $OUT/:"
 for a in "${ARTIFACTS[@]}"; do echo "  $a"; done
 echo "  SHA256SUMS"
-if [ "$NOTARIZE" = 0 ]; then
+if [ "$SELF_SIGNED" = 1 ]; then
+  echo "note: self-signed, not notarised: install with Scripts/install.sh; a browser download needs xattr -dr com.apple.quarantine." >&2
+elif [ "$NOTARIZE" = 0 ]; then
   echo "note: not notarised (--skip-notarize); other Macs will refuse to open these." >&2
 fi
