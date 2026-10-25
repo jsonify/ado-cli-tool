@@ -66,6 +66,14 @@ def format_description_html(text: str) -> str:
     if not text:
         return ""
 
+    def inline_code(escaped: str) -> str:
+        """Turn `code` spans in already-escaped text into <code> elements."""
+        return re.sub(
+            r'`([^`]+)`',
+            r'<code style="background-color: #f6f8fa; padding: 2px 4px; border-radius: 3px;">\1</code>',
+            escaped,
+        )
+
     lines = text.splitlines()
     html_lines = []
     in_list = False
@@ -113,7 +121,7 @@ def format_description_html(text: str) -> str:
             else:
                 space_idx = stripped.find(" ")
                 content = html.escape(stripped[space_idx + 1:])
-            html_lines.append(f"<li>{content}</li>")
+            html_lines.append(f"<li>{inline_code(content)}</li>")
             continue
         else:
             if in_list:
@@ -132,14 +140,7 @@ def format_description_html(text: str) -> str:
                 elif stripped.startswith("# "):
                     html_lines.append(f"<h1>{html.escape(stripped[2:])}</h1>")
                 else:
-                    # Inline code backticks
-                    line_html = html.escape(line)
-                    line_html = re.sub(
-                        r'`([^`]+)`',
-                        r'<code style="background-color: #f6f8fa; padding: 2px 4px; border-radius: 3px;">\1</code>',
-                        line_html,
-                    )
-                    html_lines.append(f"{line_html}<br />")
+                    html_lines.append(f"{inline_code(html.escape(line))}<br />")
     
     if in_list:
         html_lines.append(f"</{list_type}>")
