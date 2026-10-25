@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/jsonify/ado-desk/compare/v0.2.0...v0.2.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **app:** point the updater and installer at the renamed jsonify/ado-desk repo ([e19a36e](https://github.com/jsonify/ado-desk/commit/e19a36ed4f6c552fe1a22fff78271ec6af41f3ab))
+
 ## [0.2.0](https://github.com/jsonify/ado-cli-tool/compare/v0.1.0...v0.2.0) (2026-10-25)
 
 
