@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Custom Azure DevOps CLI prototype.
+"""Azure DevOps CLI: the engine behind ADO Desk, also usable on its own.
 
-This is the Python implementation track for the future custom CLI. It coexists
-with ado.sh while migration is in progress.
+Every command prints one JSON envelope to stdout. See docs/ENGINE_REFERENCE.md
+for the commands, flags, result shapes and error codes.
 """
 
 from __future__ import annotations
@@ -1456,7 +1456,7 @@ def build_parser() -> argparse.ArgumentParser:
     args.assigned_to). Callers should pass values as --flag=value so that values
     beginning with "-" are not read as options.
     """
-    parser = argparse.ArgumentParser(description="Azure DevOps custom CLI prototype")
+    parser = argparse.ArgumentParser(description="Azure DevOps CLI (the engine behind ADO Desk)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create = subparsers.add_parser("create", help="Create a work item")

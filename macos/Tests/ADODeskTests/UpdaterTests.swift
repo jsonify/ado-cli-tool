@@ -27,15 +27,15 @@ final class UpdaterTests: XCTestCase {
     private func json(tag: String = "v0.3.3", draft: Bool = false, prerelease: Bool = false,
                       assets: [String] = ["ADO-Desk-0.3.3.dmg", "ADO-Desk-0.3.3.zip", "SHA256SUMS"]) -> Data {
         let list = assets.map {
-            ["name": $0, "browser_download_url": "https://github.com/jsonify/ado-cli-tool/releases/download/\(tag)/\($0)"]
+            ["name": $0, "browser_download_url": "https://github.com/jsonify/ado-desk/releases/download/\(tag)/\($0)"]
         }
         let object: [String: Any] = ["tag_name": tag, "draft": draft, "prerelease": prerelease, "assets": list,
-                                     "html_url": "https://github.com/jsonify/ado-cli-tool/releases/tag/\(tag)"]
+                                     "html_url": "https://github.com/jsonify/ado-desk/releases/tag/\(tag)"]
         return try! JSONSerialization.data(withJSONObject: object)
     }
 
     func testReleaseFromJSON() {
-        let base = "https://github.com/jsonify/ado-cli-tool/releases"
+        let base = "https://github.com/jsonify/ado-desk/releases"
         XCTAssertEqual(Updater.release(fromJSON: json()), Release(
             version: "0.3.3", page: URL(string: "\(base)/tag/v0.3.3")!,
             zip: URL(string: "\(base)/download/v0.3.3/ADO-Desk-0.3.3.zip")!,

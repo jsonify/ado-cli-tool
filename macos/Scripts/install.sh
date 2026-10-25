@@ -1,13 +1,13 @@
 #!/bin/bash
 # Installs or updates ADO Desk from the latest GitHub release (macOS only):
-#   curl -fsSL https://raw.githubusercontent.com/jsonify/ado-cli-tool/main/macos/Scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jsonify/ado-desk/main/macos/Scripts/install.sh | bash
 # Releases may be signed with a self-signed certificate, so Gatekeeper calls a copy downloaded in a browser "damaged".
 # curl doesn't mark what it downloads as quarantined, so a copy installed this way just opens; and every release
 # carries the same certificate, so the Keychain keeps letting ADO Desk read your token across updates.
 # Pass a version to install that one instead: ... | bash -s -- 0.3.2
 set -euo pipefail
 
-REPO=jsonify/ado-cli-tool
+REPO=jsonify/ado-desk
 APP_NAME="ADO Desk"
 DEST="/Applications/$APP_NAME.app"
 
