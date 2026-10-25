@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1](https://github.com/jsonify/ado-desk/compare/v0.3.0...v0.3.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **app:** don't read the Keychain token on the main thread at launch ([b7f2c4d](https://github.com/jsonify/ado-desk/commit/b7f2c4d336fb8af43a73f7832397693e4f722121))
+* **app:** don't read the Keychain token on the main thread at launch ([6def98f](https://github.com/jsonify/ado-desk/commit/6def98f7509abc1fcaf5bf435155ba50d8a393ca))
+* **scripts:** keep seeding when the team area can't be set ([f2dbac0](https://github.com/jsonify/ado-desk/commit/f2dbac0258fd96f50858289bf3cc5d265aae5ef3))
+* **scripts:** keep seeding when the team area can't be set ([69005f2](https://github.com/jsonify/ado-desk/commit/69005f2b3ef95c73b532b7e72f745c6f2bcfe51d))
+
 ## [0.3.0](https://github.com/jsonify/ado-desk/compare/v0.2.1...v0.3.0) (2026-10-25)
 
 
