@@ -19,7 +19,7 @@ struct Release: Equatable {
 /// it again. Files the app downloads itself get no quarantine flag, so Gatekeeper doesn't stop the new copy as it would
 /// a browser download of a self-signed app, and the same certificate keeps Keychain access to the token.
 enum Updater {
-    static let latestRelease = URL(string: "https://api.github.com/repos/jsonify/ado-cli-tool/releases/latest")!
+    static let latestRelease = URL(string: "https://api.github.com/repos/jsonify/ado-desk/releases/latest")!
 
     struct Failure: LocalizedError {
         let errorDescription: String?

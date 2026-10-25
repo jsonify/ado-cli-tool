@@ -194,7 +194,7 @@ jobs:
           **Installing:** run this in Terminal:
 
           ```sh
-          curl -fsSL https://raw.githubusercontent.com/jsonify/ado-cli-tool/main/macos/Scripts/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/jsonify/ado-desk/main/macos/Scripts/install.sh | bash
           ```
 
           Once installed, ADO Desk updates itself (**ADO Desk → Check for Updates…**). This build is signed
