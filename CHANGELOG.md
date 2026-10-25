@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/jsonify/ado-desk/compare/v0.3.1...v0.3.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* **app:** cap the sidebar width ([2f9177f](https://github.com/jsonify/ado-desk/commit/2f9177f0d0d4a2476e3232a66ec1e9dd53e402d7))
+* **app:** cap the sidebar width ([8159b59](https://github.com/jsonify/ado-desk/commit/8159b59555e9d11442e890842f6e7855db95c77d))
+
 ## [0.3.1](https://github.com/jsonify/ado-desk/compare/v0.3.0...v0.3.1) (2026-10-25)
 
 
