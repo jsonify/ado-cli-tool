@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/jsonify/ado-desk/compare/v0.4.1...v0.5.0) (2026-10-26)
+
+
+### Features
+
+* **app:** filter reports by work item type and list closed stories in a table ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0)), closes [#29](https://github.com/jsonify/ado-desk/issues/29) [#30](https://github.com/jsonify/ado-desk/issues/30) [#31](https://github.com/jsonify/ado-desk/issues/31) [#2](https://github.com/jsonify/ado-desk/issues/2) [#3](https://github.com/jsonify/ado-desk/issues/3) [#4](https://github.com/jsonify/ado-desk/issues/4) [#5](https://github.com/jsonify/ado-desk/issues/5) [#6](https://github.com/jsonify/ado-desk/issues/6) [#7](https://github.com/jsonify/ado-desk/issues/7)
+* **app:** report type filters, Closed Stories table, linked IDs, and engine bug fixes ([7cb0601](https://github.com/jsonify/ado-desk/commit/7cb0601febe3e3db09e374c51539c8ba19ad8a25))
+
+
+### Bug Fixes
+
+* **app:** show work item IDs without a thousands separator ([7bcf236](https://github.com/jsonify/ado-desk/commit/7bcf236b9f993090c883a56078e24ce508c5d4eb)), closes [#28](https://github.com/jsonify/ado-desk/issues/28)
+* **engine:** 404s map to STORY_NOT_FOUND, ITERATION_NOT_FOUND or NOT_FOUND by command ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0))
+* **engine:** export-closed-stories compares zero-padded dates and names the default file after them ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0))
+* **engine:** export-closed-stories no longer includes items closed the day after --to-date ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0))
+* **engine:** export-modifications reads every batch instead of stopping at the first revision past --to-date ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0))
+* **engine:** iteration-pick reports a malformed --on as VALIDATION_ERROR ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0))
+* **engine:** SSL_CERT_FILE and SSL_CERT_DIR must exist, else CONFIG_ERROR ([1c731ae](https://github.com/jsonify/ado-desk/commit/1c731ae0b8f52d0c98dd81b1f8de2d8efe1844d0))
+
 ## [0.4.1](https://github.com/jsonify/ado-desk/compare/v0.4.0...v0.4.1) (2026-10-26)
 
 
