@@ -23,7 +23,7 @@ The environment is read once, before any command runs. Exported variables win ov
 | `ADO_ORG` (or `AZURE_DEVOPS_ORG`) | yes | all commands. Either a bare name (→ `https://dev.azure.com/<name>`) or an `https://` URL |
 | `ADO_PROJECT` (or `AZURE_DEVOPS_PROJECT`) | yes | all commands |
 | `ADO_TEAM` | for `iteration-list/get/update-goal` | the default for `--team` |
-| `ADO_ASSIGNEE` | for `export-closed-stories` | the default for `--assigned-to` |
+| `ADO_ASSIGNEE` | for `export-closed-stories` | the default for `--assigned-to`; a display name or an email |
 | `ADO_AREA_PATH`, `ADO_ITERATION_PATH` | no | defaults for `create` |
 | `SSL_CERT_FILE` | no | CA bundle. Ignored without warning if the path doesn't exist |
 | `ADO_ENV_FILE` | no | Read only this `.env` file. Otherwise the engine tries `./.env`, then the folder above the script's folder |
@@ -123,7 +123,7 @@ Notes:
   - The date range applies to the completion date: Closed Date for `Closed` items, Resolved Date for items in the
     other `--states` (Azure DevOps only sets Closed Date on close). Each item's `date` is that completion date, and
     items are sorted newest first.
-  - The assignee is matched loosely on the client: case and word order are ignored, and a name of at least 2 words matches if all its words appear in the display name.
+  - The assignee is matched loosely on the client against the display name or the email (`uniqueName`): case and word order are ignored, and a name of at least 2 words matches if all its words appear in the display name.
 - **`export-modifications` writes nothing.** Items come back in `result`.
   - There is one item per revision, so the same work item can appear several times. `CLIRunner`'s `Modification.id` already combines id, revision and date.
   - It downloads every revision in the project for the range, so long ranges are slow. Show progress and avoid running it automatically.
