@@ -18,6 +18,37 @@ struct ReportsView: View {
     }
 }
 
+/// The work item types the reports can be trimmed to. Other types (Bug, Issue, …) are not affected by the toggles.
+private enum ReportTypes {
+    static let all = ["Epic", "Feature", "User Story", "Task"]
+
+    /// Whether an item of this type is shown when only `shown` of the filterable types are switched on.
+    static func isShown(_ type: String?, shown: Set<String>) -> Bool {
+        guard let type, all.contains(type) else { return true }
+        return shown.contains(type)
+    }
+}
+
+private struct WorkItemTypeToggles: View {
+    @Binding var shown: Set<String>
+
+    var body: some View {
+        LabeledContent("Types") {
+            HStack(spacing: 12) {
+                ForEach(ReportTypes.all, id: \.self) { type in
+                    Toggle(type, isOn: Binding(
+                        get: { shown.contains(type) },
+                        set: { isOn in
+                            if isOn { shown.insert(type) } else { shown.remove(type) }
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                }
+            }
+        }
+    }
+}
+
 private struct RecentExportsBox: View {
     @EnvironmentObject private var model: AppModel
 
@@ -72,6 +103,7 @@ private struct WeeklyReportBox: View {
     @AppStorage("reports.weeklyNextCount") private var nextCount = 3
     @State private var fromDate = Calendar.current.date(byAdding: .day, value: -6, to: Date()) ?? Date()
     @State private var toDate = Date()
+    @State private var shownTypes = Set(ReportTypes.all)
     @State private var result: WeeklyReportResult?
     @State private var copied = false
     @State private var actionError: String?
@@ -98,6 +130,7 @@ private struct WeeklyReportBox: View {
                     DatePicker("From", selection: $fromDate, displayedComponents: .date)
                     DatePicker("To", selection: $toDate, in: fromDate..., displayedComponents: .date)
                     Stepper("Next week: \(nextCount) item(s) per area path", value: $nextCount, in: 1...10)
+                    WorkItemTypeToggles(shown: $shownTypes)
                 }
                 HStack {
                     if let result {
@@ -171,7 +204,7 @@ private struct WeeklyReportBox: View {
             }
             ForEach(items) { item in
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Button("#\(item.id)") { Desktop.open(item.url) }
+                    Button(Format.id(item.id)) { Desktop.open(item.url) }
                         .buttonStyle(.link)
                         .monospacedDigit()
                     Text(item.title)
@@ -190,6 +223,10 @@ private struct WeeklyReportBox: View {
             "--next-count=\(nextCount)",
         ]
         args += areaPaths.map { "--area-path=\($0)" }
+        let hiddenTypes = ReportTypes.all.filter { !shownTypes.contains($0) }
+        if !hiddenTypes.isEmpty {
+            args.append("--exclude-types=\(hiddenTypes.joined(separator: ","))")
+        }
         let finalArgs = args
         result = nil
         copied = false
@@ -223,17 +260,18 @@ private struct ClosedStoriesExportBox: View {
     @State private var fromDate = ClosedStoriesExportBox.startOfYear()
     @State private var limitToDate = false
     @State private var toDate = Date()
-    @State private var workItemType = "User Story"
+    @State private var shownTypes: Set<String> = ["User Story"]
     @State private var states = "Closed,Resolved"
     @State private var assignee = ""
-    @State private var outputURL: URL?
     @State private var result: ExportClosedResult?
+    @State private var selection = Set<ClosedExportItem.ID>()
+    @State private var saveError: String?
 
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Closed Stories").font(.headline)
-                Text("Exports stories closed by an assignee within a date range to a JSON file.")
+                Text("Work items closed by an assignee within a date range.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Form {
@@ -242,64 +280,79 @@ private struct ClosedStoriesExportBox: View {
                     if limitToDate {
                         DatePicker("To", selection: $toDate, in: fromDate..., displayedComponents: .date)
                     }
-                    TextField("Work item type", text: $workItemType)
+                    WorkItemTypeToggles(shown: $shownTypes)
                     TextField("States", text: $states, prompt: Text("Comma-separated"))
                     TextField(
                         "Assigned to",
                         text: $assignee,
                         prompt: Text(settings.assignee.isEmpty ? "Display name" : settings.assignee)
                     )
-                    LabeledContent("Output file") {
-                        HStack {
-                            Text((outputURL ?? defaultOutputURL).path)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .foregroundStyle(.secondary)
-                            Button("Choose…") {
-                                let name = (outputURL ?? defaultOutputURL).lastPathComponent
-                                if let url = Desktop.chooseSaveLocation(defaultName: name) {
-                                    outputURL = url
-                                }
-                            }
-                        }
-                    }
                 }
                 HStack {
                     if let result {
-                        SuccessLabel(message: "Exported \(result.count) item(s)")
-                        Button("Reveal in Finder") { Desktop.reveal(result.output) }
-                        Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: result.output)) }
+                        Text("\(result.count) item(s)").foregroundStyle(.secondary)
+                        Button("Save JSON…") { save(result) }
                     }
                     Spacer()
-                    RunButton("Export", systemImage: "square.and.arrow.up", isRunning: task.isRunning, action: export)
+                    RunButton("Run", systemImage: "magnifyingglass", isRunning: task.isRunning, action: run)
                 }
-                if let message = task.errorMessage {
+                if let message = task.errorMessage ?? saveError {
                     ErrorBanner(message: message)
+                }
+                if let result, !result.items.isEmpty {
+                    table(result.items)
                 }
             }
             .padding(6)
         }
     }
 
-    private var defaultOutputURL: URL {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        return documents
-            .appendingPathComponent("ADO Exports", isDirectory: true)
-            .appendingPathComponent("ado_closed_stories_since_\(Format.ymd.string(from: fromDate)).json")
+    private func table(_ items: [ClosedExportItem]) -> some View {
+        Table(items, selection: $selection) {
+            TableColumn("Closed") { (item: ClosedExportItem) in
+                Text(item.date).monospacedDigit()
+            }
+            .width(80)
+            TableColumn("ID") { (item: ClosedExportItem) in
+                Button(Format.id(item.id)) { Desktop.open(item.url) }
+                    .buttonStyle(.link)
+                    .monospacedDigit()
+            }
+            .width(70)
+            TableColumn("Type") { (item: ClosedExportItem) in
+                Text(item.workItemType)
+            }
+            .width(90)
+            TableColumn("Title") { (item: ClosedExportItem) in
+                Text(item.title)
+            }
+            TableColumn("State") { (item: ClosedExportItem) in
+                Text(item.state)
+            }
+            .width(80)
+        }
+        .contextMenu(forSelectionType: ClosedExportItem.ID.self) { ids in
+            Button("Open in Azure DevOps") { open(ids, in: items) }
+        } primaryAction: { ids in
+            open(ids, in: items)
+        }
+        .frame(height: 320)
     }
 
-    private func export() {
+    private func run() {
+        let types = ReportTypes.all.filter { shownTypes.contains($0) }
+        guard !types.isEmpty else {
+            task.errorMessage = "Choose at least one work item type."
+            return
+        }
         var args = [
             "export-closed-stories",
             "--from-date=\(Format.ymd.string(from: fromDate))",
-            "--output=\((outputURL ?? defaultOutputURL).path)",
+            "--work-item-type=\(types.joined(separator: ","))",
+            "--no-output",
         ]
         if limitToDate {
             args.append("--to-date=\(Format.ymd.string(from: toDate))")
-        }
-        if !workItemType.trimmed.isEmpty {
-            args.append("--work-item-type=\(workItemType.trimmed)")
         }
         if !states.trimmed.isEmpty {
             args.append("--states=\(states.trimmed)")
@@ -309,10 +362,30 @@ private struct ClosedStoriesExportBox: View {
         }
         let finalArgs = args
         result = nil
+        saveError = nil
         task.run {
-            let exported = try await cli.run(finalArgs, as: ExportClosedResult.self)
-            result = exported
-            model.recordExport(kind: "Closed stories", path: exported.output, count: exported.count)
+            result = try await cli.run(finalArgs, as: ExportClosedResult.self)
+            selection = []
+        }
+    }
+
+    private func open(_ ids: Set<ClosedExportItem.ID>, in items: [ClosedExportItem]) {
+        for item in items where ids.contains(item.id) {
+            Desktop.open(item.url)
+        }
+    }
+
+    private func save(_ result: ExportClosedResult) {
+        let name = "ado_closed_stories_since_\(result.fromDate).json"
+        guard let url = Desktop.chooseSaveLocation(defaultName: name) else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        do {
+            try encoder.encode(result).write(to: url, options: .atomic)
+            saveError = nil
+            model.recordExport(kind: "Closed stories", path: url.path, count: result.count)
+        } catch {
+            saveError = "Could not save file: \(error.localizedDescription)"
         }
     }
 
@@ -332,6 +405,7 @@ private struct ModificationsExportBox: View {
     @State private var fromDate = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var limitToDate = false
     @State private var toDate = Date()
+    @State private var shownTypes = Set(ReportTypes.all)
     @State private var result: ModificationsResult?
     @State private var selection = Set<Modification.ID>()
     @State private var saveError: String?
@@ -354,9 +428,10 @@ private struct ModificationsExportBox: View {
                     if limitToDate {
                         DatePicker("To", selection: $toDate, in: fromDate..., displayedComponents: .date)
                     }
+                    WorkItemTypeToggles(shown: $shownTypes)
                 }
                 HStack {
-                    if let result {
+                    if let result = filteredResult {
                         Text("\(result.count) revision(s)").foregroundStyle(.secondary)
                         Button("Save JSON…") { save(result) }
                     }
@@ -366,12 +441,19 @@ private struct ModificationsExportBox: View {
                 if let message = task.errorMessage ?? saveError {
                     ErrorBanner(message: message)
                 }
-                if let result, !result.items.isEmpty {
+                if let result = filteredResult, !result.items.isEmpty {
                     table(result.items)
                 }
             }
             .padding(6)
         }
+    }
+
+    /// The result with only the revisions of the switched-on types. Filtering here keeps toggling instant.
+    private var filteredResult: ModificationsResult? {
+        guard let result else { return nil }
+        let items = result.items.filter { ReportTypes.isShown($0.workItemType, shown: shownTypes) }
+        return ModificationsResult(user: result.user, fromDate: result.fromDate, toDate: result.toDate, count: items.count, items: items)
     }
 
     private func table(_ items: [Modification]) -> some View {
@@ -381,7 +463,9 @@ private struct ModificationsExportBox: View {
             }
             .width(130)
             TableColumn("ID") { (item: Modification) in
-                Text("#\(item.workItemID)").monospacedDigit()
+                Button(Format.id(item.workItemID)) { Desktop.open(item.url) }
+                    .buttonStyle(.link)
+                    .monospacedDigit()
             }
             .width(70)
             TableColumn("Rev") { (item: Modification) in

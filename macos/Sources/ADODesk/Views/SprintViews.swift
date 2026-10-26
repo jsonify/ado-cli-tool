@@ -370,7 +370,9 @@ struct ClosedStoriesPanel: View {
     private func storiesTable(_ stories: [ClosedStory]) -> some View {
         Table(stories, selection: $selection) {
             TableColumn("ID") { (story: ClosedStory) in
-                Text("#\(story.id)").monospacedDigit()
+                Button(Format.id(story.id)) { Desktop.open(story.url) }
+                    .buttonStyle(.link)
+                    .monospacedDigit()
             }
             .width(70)
             TableColumn("Title") { (story: ClosedStory) in

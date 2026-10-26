@@ -210,14 +210,31 @@ struct ClosedStory: Decodable, Identifiable, Hashable {
 
 // MARK: - Exports
 
-struct ExportClosedResult: Decodable {
+struct ExportClosedResult: Codable {
     let count: Int
-    let output: String
+    /// The file the engine wrote, or nil when run with --no-output.
+    let output: String?
     let fromDate: String
     let toDate: String?
     let workItemType: String
+    let workItemTypes: [String]?
     let states: [String]
     let assignee: String
+    let items: [ClosedExportItem]
+}
+
+struct ClosedExportItem: Codable, Identifiable, Hashable {
+    let id: Int
+    /// Completion date as M/D/YYYY.
+    let date: String
+    let title: String
+    let state: String
+    let workItemType: String
+    let assignedTo: String
+    let tags: String
+    let description: String
+    let acceptanceCriteria: String
+    let url: String
 }
 
 struct ModificationsResult: Codable {

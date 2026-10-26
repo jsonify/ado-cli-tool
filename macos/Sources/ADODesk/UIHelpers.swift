@@ -44,6 +44,11 @@ enum Format {
         return monthDay.string(from: date)
     }
 
+    /// 123456 → "#123456". Interpolating an Int into a SwiftUI string literal formats it for the locale ("#123,456").
+    static func id(_ id: Int) -> String {
+        "#" + String(id)
+    }
+
     static func points(_ value: Double) -> String {
         value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }

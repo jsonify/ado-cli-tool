@@ -40,6 +40,7 @@ jobs:
         run: |
           python3 -m py_compile ../ado_cli.py
           python3 ../ado_cli.py --help > /dev/null
+          python3 -m unittest discover -s ../tests
       - name: Unit tests (warnings are errors)
         run: swift test -Xswiftc -warnings-as-errors
       - name: Build app (warnings are errors)
