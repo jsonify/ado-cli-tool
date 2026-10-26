@@ -25,7 +25,8 @@ The environment is read once, before any command runs. Exported variables win ov
 | `ADO_TEAM` | for `iteration-list/get/update-goal` | the default for `--team` |
 | `ADO_ASSIGNEE` | for `export-closed-stories` | the default for `--assigned-to`; a display name or an email |
 | `ADO_AREA_PATH`, `ADO_ITERATION_PATH` | no | defaults for `create` |
-| `SSL_CERT_FILE` | no | CA bundle. Ignored without warning if the path doesn't exist |
+| `SSL_CERT_FILE` | no | CA bundle file. If set, it must be an existing file, or every command fails with `CONFIG_ERROR` |
+| `SSL_CERT_DIR` | no | Directory of CA certificates (OpenSSL `capath`). If set, it must be an existing directory, or every command fails with `CONFIG_ERROR` |
 | `ADO_ENV_FILE` | no | Read only this `.env` file. Otherwise the engine tries `./.env`, then the folder above the script's folder |
 
 The three required variables are needed even for commands that would not otherwise touch them. If one is missing, every command fails with `CONFIG_ERROR`.
@@ -52,12 +53,14 @@ Every handled run prints exactly one JSON object to stdout:
 
 | Code | Meaning |
 |---|---|
-| `CONFIG_ERROR` | A required environment variable is missing, `ADO_ORG` is invalid, or there is no team for an iteration command. `organization` and `project` are `null` when config loading failed |
+| `CONFIG_ERROR` | A required environment variable is missing, `ADO_ORG` is invalid, `SSL_CERT_FILE`/`SSL_CERT_DIR` doesn't point to an existing file/directory, or there is no team for an iteration command. `organization` and `project` are `null` when config loading failed |
 | `AUTH_ERROR` | HTTP 401 or 403 (bad or expired PAT, or missing scope) |
-| `STORY_NOT_FOUND` | HTTP 404 from **any** endpoint, iterations and teams included |
-| `VALIDATION_ERROR` | Input rejected by the engine, or HTTP 400 from ADO (for example an unknown field such as `Custom.SecondaryAssignee`) |
+| `STORY_NOT_FOUND` | HTTP 404 from `get`, `update`, `delete` or `comment` (an unknown work item id, or a misspelled project) |
+| `ITERATION_NOT_FOUND` | HTTP 404 from `iteration-get` or `iteration-update-goal` (an unknown iteration GUID, or a misspelled team) |
+| `NOT_FOUND` | HTTP 404 from any other command (for example a misspelled `--team` on `iteration-list`) |
+| `VALIDATION_ERROR` | Input rejected by the engine (including a malformed date flag such as `--on`), or HTTP 400 from ADO (for example an unknown field such as `Custom.SecondaryAssignee`) |
 | `NO_ITERATION_MATCH` | `iteration-pick` found no matching iteration |
-| `API_ERROR` | Any other HTTP status, network errors and timeouts (60 s), non-JSON responses, and unexpected exceptions (for example an unreadable `--body-file`, or a malformed `--on` date) |
+| `API_ERROR` | Any other HTTP status, network errors and timeouts (60 s), non-JSON responses, and unexpected exceptions (for example an unreadable `--body-file`) |
 
 ## Commands
 
@@ -111,22 +114,25 @@ Notes:
 
 | Command | Flags | `result` | Swift model |
 |---|---|---|---|
-| `export-closed-stories` | `--from-date` (`2025-01-01`), `--to-date`, `--work-item-type` (`User Story`), `--states` (`Closed,Resolved`), `--assigned-to` (or `ADO_ASSIGNEE`), `--output` | `count, output, fromDate, toDate, workItemType, states, assignee` | `ExportClosedResult` |
+| `export-closed-stories` | `--from-date` (`2025-01-01`), `--to-date`, `--work-item-type` (`User Story`; comma-separated for several), `--states` (`Closed,Resolved`), `--assigned-to` (or `ADO_ASSIGNEE`), `--output`, `--no-output` | `count, output, fromDate, toDate, workItemType, workItemTypes, states, assignee, items[…]` | `ExportClosedResult` |
 | `export-modifications` | `--user` (required), `--from-date` (required), `--to-date` | `user, fromDate, toDate, count, items[{id, revision, changedDate, changedBy, title, state, workItemType, url}]` | `ModificationsResult` |
-| `weekly-report` | `--area-path`… (or `ADO_AREA_PATH`), `--from-date` (6 days before `--to-date`), `--to-date` (today), `--assigned-to` (or `ADO_ASSIGNEE`, else the token's owner), `--done-states` (`Closed,Resolved,Done`), `--blocked-states` (`Blocked`), `--next-count` (`3`), `--output` | `fromDate, toDate, rangeLabel, assignee, areaPaths, sections[{areaPath, name, completed, progressed, blocked, upcoming}], markdown, html, output` | `WeeklyReportResult` |
+| `weekly-report` | `--area-path`… (or `ADO_AREA_PATH`), `--from-date` (6 days before `--to-date`), `--to-date` (today), `--assigned-to` (or `ADO_ASSIGNEE`, else the token's owner), `--done-states` (`Closed,Resolved,Done`), `--blocked-states` (`Blocked`), `--next-count` (`3`), `--exclude-types` (comma-separated), `--output` | `fromDate, toDate, rangeLabel, assignee, areaPaths, sections[{areaPath, name, completed, progressed, blocked, upcoming}], markdown, html, output` | `WeeklyReportResult` |
 
 Notes:
-- **`export-closed-stories` writes a file.** The items are only in the file at `output`, not in `result`.
-  - The default path is relative (`data/…`) to the engine's working directory, which for the app is `~/Library/Application Support/ADODesk`. Pass an absolute `--output`.
-  - File schema: `organization, project, fromDate, fromDateIso, toDate, toDateIso, workItemType, states, assignee, count, items[{id, date (M/D/YYYY), title, state, workItemType, assignedTo, tags, description, acceptanceCriteria}]`. Rich text is flattened to plain text.
-  - `--to-date` is inclusive.
+- **`export-closed-stories` writes a file** unless `--no-output` is given (then `output` is `null`). The items are in both the file and `result`.
+  - The default path is relative (`data/…`, named after the zero-padded `--from-date`) to the engine's working directory, which for the app is `~/Library/Application Support/ADODesk`. Pass an absolute `--output`. The app passes `--no-output` and saves the `result` itself.
+  - File schema: `organization, project, fromDate, fromDateIso, toDate, toDateIso, workItemType, workItemTypes, states, assignee, count, items[{id, date (M/D/YYYY), title, state, workItemType, assignedTo, tags, description, acceptanceCriteria, url}]`. Rich text is flattened to plain text.
+  - `--to-date` is inclusive: the query uses `<= '<to-date>'`, which WIQL compares at day precision. Dates are compared after zero-padding, so `--to-date=2025-9-30` is correctly rejected before `--from-date=2025-10-01`.
   - The date range applies to the completion date: Closed Date for `Closed` items, Resolved Date for items in the
     other `--states` (Azure DevOps only sets Closed Date on close). Each item's `date` is that completion date, and
     items are sorted newest first.
   - The assignee is matched loosely on the client against the display name or the email (`uniqueName`): case and word order are ignored, and a name of at least 2 words matches if all its words appear in the display name.
 - **`export-modifications` writes nothing.** Items come back in `result`.
   - There is one item per revision, so the same work item can appear several times. `CLIRunner`'s `Modification.id` already combines id, revision and date.
-  - It downloads every revision in the project for the range, so long ranges are slow. Show progress and avoid running it automatically.
+  - It downloads every revision in the project from `--from-date` to the latest one, even with `--to-date`: the
+    reporting API pages by watermark, not strictly by changed date, so stopping at the first revision past `--to-date`
+    could drop revisions still in range. Long ranges and old start dates are slow. Show progress and avoid running it
+    automatically.
 
 - **`weekly-report`** builds a status report for one person, with one section per `--area-path` (repeat the flag;
   child areas are included). Each section has four lists of items `{id, title, workItemType, state, fromState, date,
@@ -140,6 +146,7 @@ Notes:
   - Dates are compared as local calendar days on the machine running the engine. `Removed` items are skipped.
   - Without `--assigned-to` or `ADO_ASSIGNEE` the query uses `@Me`, the token's owner. A name is matched loosely, like
     `export-closed-stories`.
+  - `--exclude-types` leaves out the listed work item types (for example `Epic,Feature`).
   - `markdown` and `html` are the rendered report. `--output` also writes the Markdown to that path.
 
 ## Adding a new command

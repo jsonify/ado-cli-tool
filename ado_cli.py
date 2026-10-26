@@ -44,6 +44,7 @@ class Config:
     area_path: str
     iteration_path: str
     ssl_cert_file: str
+    ssl_cert_dir: str = ""
 
 
 def utc_timestamp() -> str:
@@ -344,11 +345,13 @@ def load_config() -> Config:
         token:   ADO_TOKEN, AZURE_DEVOPS_PAT, ADO_PAT
         org:     ADO_ORG, AZURE_DEVOPS_ORG (normalized by normalize_org)
         project: ADO_PROJECT, AZURE_DEVOPS_PROJECT
-    Optional: ADO_TEAM, ADO_ASSIGNEE, ADO_AREA_PATH, ADO_ITERATION_PATH, SSL_CERT_FILE.
+    Optional: ADO_TEAM, ADO_ASSIGNEE, ADO_AREA_PATH, ADO_ITERATION_PATH,
+    SSL_CERT_FILE (a CA bundle file), SSL_CERT_DIR (a directory of CA certificates).
 
     Raises:
-        ValueError: A required variable is missing or ADO_ORG is invalid. main()
-            reports this as CONFIG_ERROR before any command runs.
+        ValueError: A required variable is missing, ADO_ORG is invalid, SSL_CERT_FILE
+            is not an existing file or SSL_CERT_DIR is not an existing directory.
+            main() reports this as CONFIG_ERROR before any command runs.
     """
     load_dotenv_defaults()
 
@@ -360,6 +363,11 @@ def load_config() -> Config:
     area_path = os.getenv("ADO_AREA_PATH", "").strip()
     iteration_path = os.getenv("ADO_ITERATION_PATH", "").strip()
     ssl_cert_file = os.getenv("SSL_CERT_FILE", "").strip()
+    if ssl_cert_file and not os.path.isfile(ssl_cert_file):
+        raise ValueError(f"SSL_CERT_FILE must be an existing CA bundle file: {ssl_cert_file}")
+    ssl_cert_dir = os.getenv("SSL_CERT_DIR", "").strip()
+    if ssl_cert_dir and not os.path.isdir(ssl_cert_dir):
+        raise ValueError(f"SSL_CERT_DIR must be an existing directory: {ssl_cert_dir}")
 
     return Config(
         token=token,
@@ -370,6 +378,7 @@ def load_config() -> Config:
         area_path=area_path,
         iteration_path=iteration_path,
         ssl_cert_file=ssl_cert_file,
+        ssl_cert_dir=ssl_cert_dir,
     )
 
 
@@ -383,9 +392,9 @@ class AdoClient:
     def __init__(self, cfg: Config) -> None:
         """Prepare the project base URL, the Basic auth header and the TLS context.
 
-        The PAT is sent as Basic auth with an empty user name. SSL_CERT_FILE is used as
-        the CA bundle only if the path exists; otherwise the system defaults are used
-        without warning.
+        The PAT is sent as Basic auth with an empty user name. SSL_CERT_FILE and
+        SSL_CERT_DIR (validated by load_config) become the context's cafile and capath;
+        when neither is set, the system defaults are used.
         """
         self.cfg = cfg
         project_encoded = urllib.parse.quote(cfg.project, safe="")
@@ -393,9 +402,8 @@ class AdoClient:
         auth = base64.b64encode(f":{cfg.token}".encode("utf-8")).decode("utf-8")
         self.auth_header = f"Basic {auth}"
         self.ssl_context = ssl.create_default_context(
-            cafile=cfg.ssl_cert_file
-            if cfg.ssl_cert_file and os.path.exists(cfg.ssl_cert_file)
-            else None
+            cafile=cfg.ssl_cert_file or None,
+            capath=cfg.ssl_cert_dir or None,
         )
 
     def _dispatch(self, method: str, url: str, payload: Any = None, content_type: str | None = None) -> Any:
@@ -522,16 +530,29 @@ class CliError(Exception):
         super().__init__(message)
 
 
-def map_api_error(err: AdoApiError) -> tuple[str, str]:
+# The code a 404 maps to, per command. Commands not listed report NOT_FOUND.
+NOT_FOUND_CODES = {
+    "get": "STORY_NOT_FOUND",
+    "update": "STORY_NOT_FOUND",
+    "delete": "STORY_NOT_FOUND",
+    "comment": "STORY_NOT_FOUND",
+    "iteration-get": "ITERATION_NOT_FOUND",
+    "iteration-update-goal": "ITERATION_NOT_FOUND",
+}
+
+
+def map_api_error(err: AdoApiError, command: str | None = None) -> tuple[str, str]:
     """Map an AdoApiError to an envelope (code, message) pair.
 
-    401/403 -> AUTH_ERROR, 404 -> STORY_NOT_FOUND (for every endpoint, including
-    iterations), 400 -> VALIDATION_ERROR, anything else -> API_ERROR.
+    401/403 -> AUTH_ERROR; 404 -> the command's code in NOT_FOUND_CODES
+    (STORY_NOT_FOUND for work item commands, ITERATION_NOT_FOUND for commands
+    that take an iteration GUID), else NOT_FOUND; 400 -> VALIDATION_ERROR;
+    anything else -> API_ERROR.
     """
     if err.status in (401, 403):
         return ("AUTH_ERROR", err.message)
     if err.status == 404:
-        return ("STORY_NOT_FOUND", err.message)
+        return (NOT_FOUND_CODES.get(command or "", "NOT_FOUND"), err.message)
     if err.status == 400:
         return ("VALIDATION_ERROR", err.message)
     return ("API_ERROR", err.message)
@@ -589,19 +610,19 @@ def _sanitize_rich_text(value: Any) -> str:
 
 def _build_closed_stories_wiql(
     project: str,
-    work_item_type: str,
+    work_item_types: list[str],
     states: list[str],
     from_date_iso: str,
     to_date_iso: str | None,
 ) -> str:
     """Build the WIQL query for export-closed-stories.
 
-    Selects ids in the project with the given work item type and any of the states,
-    completed in the date range: ClosedDate >= from_date_iso and, if given,
-    <= to_date_iso. Azure DevOps only sets ClosedDate in the Closed state, so items
-    in any of the other states (Resolved, by default) match on ResolvedDate instead.
-    The caller passes the day after --to-date as to_date_iso so that the end date
-    is inclusive.
+    Selects ids in the project with any of the work item types and any of the
+    states, completed in the date range: ClosedDate >= from_date_iso and, if given,
+    <= to_date_iso. WIQL compares date-only literals at day precision, so both ends
+    are inclusive days. Azure DevOps only sets ClosedDate in the Closed state, so
+    items in any of the other states (Resolved, by default) match on ResolvedDate
+    instead.
     """
     def in_range(date_field: str) -> str:
         condition = f"[{date_field}] >= '{from_date_iso}'"
@@ -610,7 +631,7 @@ def _build_closed_stories_wiql(
         return condition
 
     escaped_states = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in states)
-    escaped_type = _escape_wiql_literal(work_item_type)
+    escaped_types = ", ".join(f"'{_escape_wiql_literal(t)}'" for t in work_item_types)
     escaped_project = _escape_wiql_literal(project)
 
     completed = f"({in_range('Microsoft.VSTS.Common.ClosedDate')})"
@@ -626,7 +647,7 @@ def _build_closed_stories_wiql(
         "SELECT [System.Id] "
         "FROM WorkItems "
         f"WHERE [System.TeamProject] = '{escaped_project}' "
-        f"AND [System.WorkItemType] = '{escaped_type}' "
+        f"AND [System.WorkItemType] IN ({escaped_types}) "
         f"AND [System.State] IN ({escaped_states}) "
         f"AND {completed}"
     )
@@ -900,18 +921,16 @@ def cmd_iteration_pick(args: argparse.Namespace, client: AdoClient) -> dict[str,
         {"path", "name" (e.g. "October 2025"), "fiscalYear" (e.g. "FY26")}.
 
     Raises:
-        CliError: VALIDATION_ERROR for a blank --area-path; NO_ITERATION_MATCH when
-            nothing under the prefix or nothing in the expected format is found.
-            A malformed --on is not validated, so it surfaces as API_ERROR.
+        CliError: VALIDATION_ERROR for a blank --area-path or a malformed --on;
+            NO_ITERATION_MATCH when nothing under the prefix or nothing in the
+            expected format is found.
     """
-    import re
-    from datetime import datetime
-
     area = (args.area_path or "").strip()
     if not area:
         raise CliError("VALIDATION_ERROR", "--area-path is required")
 
-    ref = datetime.strptime(args.on, "%Y-%m-%d") if getattr(args, "on", None) else datetime.now()
+    on = getattr(args, "on", None)
+    ref = dt.datetime.strptime(_validate_date(on, flag="on"), "%Y-%m-%d") if on else dt.datetime.now()
 
     path = (
         f"wit/classificationnodes/iterations"
@@ -949,16 +968,16 @@ def cmd_iteration_pick(args: argparse.Namespace, client: AdoClient) -> dict[str,
 
     fy_matches = [c for c in candidates if fy_label in c[0]] or candidates
 
-    valid: list[tuple[str, datetime]] = []
+    valid: list[tuple[str, dt.datetime]] = []
     for p, my in fy_matches:
         try:
-            valid.append((p, datetime.strptime(my, "%B %Y")))
+            valid.append((p, dt.datetime.strptime(my, "%B %Y")))
         except ValueError:
             continue
     if not valid:
         raise CliError("NO_ITERATION_MATCH", f"No valid month-year in {fy_label}")
 
-    ref_month = datetime(ref.year, ref.month, 1)
+    ref_month = dt.datetime(ref.year, ref.month, 1)
     valid.sort(key=lambda x: x[1])
     chosen = next((v for v in valid if v[1] >= ref_month), valid[-1])
 
@@ -1234,9 +1253,10 @@ def cmd_iteration_closed_stories(args: argparse.Namespace, client: AdoClient) ->
 
 
 def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
-    """Write one person's closed work items in a date range to a JSON file (command: export-closed-stories).
+    """List one person's closed work items in a date range and write them to a JSON file (command: export-closed-stories).
 
-    A WIQL query matches the type, the states and the completion date within
+    A WIQL query matches the types (--work-item-type, comma-separated), the states
+    and the completion date within
     [--from-date, --to-date], with the end date inclusive: ClosedDate for Closed
     items, ResolvedDate for items in the other states (ADO only sets ClosedDate on
     Closed). Fields are batch-fetched,
@@ -1246,28 +1266,30 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
 
     The file is written to --output (default
     data/ado_closed_stories_since_<from-date>.json, relative to the working
-    directory). Parent directories are created. The file holds {"organization",
-    "project", "fromDate", "fromDateIso", "toDate", "toDateIso", "workItemType",
-    "states", "assignee", "count", "items": [{"id", "date", "title", "state",
-    "workItemType", "assignedTo", "tags", "description", "acceptanceCriteria"}]}.
+    directory) unless --no-output is given. Parent directories are created. The
+    file holds {"organization", "project", "fromDate", "fromDateIso", "toDate",
+    "toDateIso", "workItemType", "workItemTypes", "states", "assignee", "count",
+    "items": [{"id", "date", "title", "state", "workItemType", "assignedTo",
+    "tags", "description", "acceptanceCriteria", "url"}]}.
 
     Returns:
-        {"count", "output", "fromDate", "toDate", "workItemType", "states",
-        "assignee"}. The items themselves are only in the file.
+        {"count", "output" (None with --no-output), "fromDate", "toDate",
+        "workItemType", "workItemTypes", "states", "assignee", "items"}, with the
+        same items as the file.
 
     Raises:
         CliError: VALIDATION_ERROR for bad dates, --to-date before --from-date,
-            empty --states, or no assignee (--assigned-to or ADO_ASSIGNEE).
+            empty --work-item-type or --states, or no assignee (--assigned-to or
+            ADO_ASSIGNEE).
     """
     from_date_iso = _validate_from_date(args.from_date)
     to_date_iso = _validate_to_date(args.to_date) if args.to_date else None
-    if args.to_date and args.to_date < args.from_date:
+    if to_date_iso and to_date_iso < from_date_iso:
         raise CliError("VALIDATION_ERROR", "--to-date must be on or after --from-date")
 
-    query_to_date_iso = None
-    if to_date_iso:
-        query_to_date_iso = (dt.datetime.strptime(to_date_iso, "%Y-%m-%d") + dt.timedelta(days=1)).strftime("%Y-%m-%d")
-
+    work_item_types = [t.strip() for t in args.work_item_type.split(",") if t.strip()]
+    if not work_item_types:
+        raise CliError("VALIDATION_ERROR", "--work-item-type cannot be empty")
     states = [state.strip() for state in args.states.split(",") if state.strip()]
     if not states:
         raise CliError("VALIDATION_ERROR", "--states cannot be empty")
@@ -1276,8 +1298,8 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
     if not assignee:
         raise CliError("VALIDATION_ERROR", "--assigned-to is required (or set ADO_ASSIGNEE in .env)")
 
-    output_path = args.output or f"data/ado_closed_stories_since_{args.from_date}.json"
-    wiql = _build_closed_stories_wiql(client.cfg.project, args.work_item_type, states, from_date_iso, query_to_date_iso)
+    output_path = None if args.no_output else (args.output or f"data/ado_closed_stories_since_{from_date_iso}.json")
+    wiql = _build_closed_stories_wiql(client.cfg.project, work_item_types, states, from_date_iso, to_date_iso)
 
     wiql_result = client.request("POST", f"wit/wiql?api-version={API_VERSION}", payload={"query": wiql})
     ids = [item.get("id") for item in wiql_result.get("workItems", []) if item.get("id") is not None]
@@ -1336,6 +1358,7 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
                     "tags": _sanitize_rich_text(fields.get("System.Tags")),
                     "description": _sanitize_rich_text(fields.get("System.Description")),
                     "acceptanceCriteria": _sanitize_rich_text(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria")),
+                    "url": build_work_item_url(client.cfg, item.get("id", "")),
                 },
             )
         )
@@ -1352,18 +1375,20 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
         "toDate": args.to_date,
         "toDateIso": to_date_iso,
         "workItemType": args.work_item_type,
+        "workItemTypes": work_item_types,
         "states": states,
         "assignee": assignee,
         "count": len(items),
         "items": items,
     }
 
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-        f.write("\n")
+    if output_path:
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
 
     return {
         "count": len(items),
@@ -1371,17 +1396,18 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
         "fromDate": args.from_date,
         "toDate": args.to_date,
         "workItemType": args.work_item_type,
+        "workItemTypes": work_item_types,
         "states": states,
         "assignee": assignee,
+        "items": items,
     }
 
 def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
     """List every revision a user made in a date range (command: export-modifications).
 
     Pages through wit/reporting/workitemrevisions (up to 2000 per page) starting at
-    --from-date, following continuationToken until isLastBatch. It stops early at
-    the first revision dated on or after the day after --to-date, which assumes
-    revisions arrive in date order. Revisions are matched to --user on
+    --from-date, following continuationToken until isLastBatch, and skips revisions
+    outside [--from-date, --to-date]. Revisions are matched to --user on
     System.ChangedBy with _identity_matches. Every revision in the project in the
     range is downloaded, so wide ranges can be slow.
 
@@ -1443,7 +1469,6 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
             "GET",
             f"wit/reporting/workitemrevisions?{urllib.parse.urlencode(params)}",
         )
-        reached_end = False
         for revision in batch_result.get("values", []):
             fields = revision.get("fields", {})
             changed_date_raw = fields.get("System.ChangedDate")
@@ -1457,7 +1482,6 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
             if changed_datetime < from_datetime:
                 continue
             if to_datetime and changed_datetime >= to_datetime:
-                reached_end = True
                 continue
 
             changed_by = _normalize_identity_name(fields.get("System.ChangedBy"))
@@ -1478,7 +1502,10 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
                 }
             )
 
-        if batch_result.get("isLastBatch") or reached_end:
+        # The reporting API pages by watermark, which is not guaranteed to follow
+        # System.ChangedDate, so a revision past --to-date doesn't mean the rest are.
+        # Read to the last batch rather than risk silently dropping in-range revisions.
+        if batch_result.get("isLastBatch"):
             break
         continuation_token = batch_result.get("continuationToken")
         if not continuation_token:
@@ -1531,13 +1558,21 @@ def _local_date(value: Any) -> dt.date | None:
     return parsed.astimezone().date()
 
 
-def _build_weekly_report_wiql(project: str, area_path: str, since_iso: str, done_states: list[str], use_me: bool) -> str:
+def _build_weekly_report_wiql(
+    project: str,
+    area_path: str,
+    since_iso: str,
+    done_states: list[str],
+    use_me: bool,
+    exclude_types: list[str] | None = None,
+) -> str:
     """Build the WIQL query for one area path of weekly-report.
 
     Selects items under the area path (child areas included) that changed on or
-    after since_iso or are still open (not in done_states), excluding Removed.
-    With use_me the query keeps only items assigned to the PAT's owner (@Me);
-    otherwise the caller filters by assignee on the client.
+    after since_iso or are still open (not in done_states), excluding Removed and
+    any work item type in exclude_types. With use_me the query keeps only items
+    assigned to the PAT's owner (@Me); otherwise the caller filters by assignee on
+    the client.
     """
     escaped_done = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in done_states)
     escaped_excluded = ", ".join(f"'{_escape_wiql_literal(s)}'" for s in WEEKLY_EXCLUDED_STATES)
@@ -1549,6 +1584,9 @@ def _build_weekly_report_wiql(project: str, area_path: str, since_iso: str, done
         f"AND [System.State] NOT IN ({escaped_excluded}) "
         f"AND ([System.ChangedDate] >= '{since_iso}' OR [System.State] NOT IN ({escaped_done}))"
     )
+    if exclude_types:
+        escaped_types = ", ".join(f"'{_escape_wiql_literal(t)}'" for t in exclude_types)
+        query += f" AND [System.WorkItemType] NOT IN ({escaped_types})"
     if use_me:
         query += " AND [System.AssignedTo] = @Me"
     return query
@@ -1674,6 +1712,7 @@ def cmd_weekly_report(args: argparse.Namespace, client: AdoClient) -> dict[str, 
     - upcoming: up to --next-count other open items, started ones first, then by
       priority and most recently changed.
 
+    Work item types listed in --exclude-types (comma-separated) are left out.
     Dates are compared as local calendar days. Without --assigned-to or
     ADO_ASSIGNEE, items are those assigned to the PAT's owner (@Me); with a name,
     the assignee is matched loosely on the client (see _identity_matches).
@@ -1702,6 +1741,7 @@ def cmd_weekly_report(args: argparse.Namespace, client: AdoClient) -> dict[str, 
         raise CliError("VALIDATION_ERROR", "--to-date must be on or after --from-date")
     done_states = _split_states(args.done_states, flag="done-states")
     blocked_states = _split_states(args.blocked_states, flag="blocked-states")
+    exclude_types = [t.strip() for t in (args.exclude_types or "").split(",") if t.strip()]
     if args.next_count < 0:
         raise CliError("VALIDATION_ERROR", "--next-count cannot be negative")
 
@@ -1734,7 +1774,9 @@ def cmd_weekly_report(args: argparse.Namespace, client: AdoClient) -> dict[str, 
 
     sections: list[dict[str, Any]] = []
     for area_path in area_paths:
-        wiql = _build_weekly_report_wiql(client.cfg.project, area_path, since_iso, done_states, use_me=not assignee)
+        wiql = _build_weekly_report_wiql(
+            client.cfg.project, area_path, since_iso, done_states, use_me=not assignee, exclude_types=exclude_types
+        )
         wiql_result = client.request("POST", f"wit/wiql?api-version={API_VERSION}", payload={"query": wiql})
         ids = [int(item["id"]) for item in wiql_result.get("workItems", []) if item.get("id") is not None]
 
@@ -1925,7 +1967,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_closed_stories.add_argument(
         "--work-item-type",
         default="User Story",
-        help="ADO work item type to query (default: User Story)",
+        help="Comma-separated ADO work item types to query (default: User Story)",
     )
     export_closed_stories.add_argument(
         "--states",
@@ -1943,6 +1985,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Output JSON path. Default: data/ado_closed_stories_since_<from-date>.json",
     )
+    export_closed_stories.add_argument(
+        "--no-output",
+        dest="no_output",
+        action="store_true",
+        help="Return the items without writing a file",
+    )
     export_mods = subparsers.add_parser("export-modifications", help="Export all modifications by a user in a date range")
     export_mods.add_argument("--user", required=True, help="User's display name (e.g. 'Jason Rueckert')")
     export_mods.add_argument("--from-date", required=True, help="Start date in YYYY-MM-DD format")
@@ -1956,6 +2004,7 @@ def build_parser() -> argparse.ArgumentParser:
     weekly.add_argument("--done-states", default="Closed,Resolved,Done", help="Comma-separated completed states (default: Closed,Resolved,Done)")
     weekly.add_argument("--blocked-states", default="Blocked", help="Comma-separated blocked states (default: Blocked)")
     weekly.add_argument("--next-count", type=int, default=3, help="Open items to list under Next week, per area path (default: 3)")
+    weekly.add_argument("--exclude-types", dest="exclude_types", default="", help="Comma-separated work item types to leave out (e.g. Epic,Feature)")
     weekly.add_argument("--output", default="", help="Also write the Markdown report to this path")
 
     return parser
@@ -2016,7 +2065,7 @@ def main(argv: list[str]) -> int:
         print_json(envelope_error(args.command, cfg, e.code, e.message))
         return 1
     except AdoApiError as e:
-        code, message = map_api_error(e)
+        code, message = map_api_error(e, args.command)
         print_json(envelope_error(args.command, cfg, code, message))
         return 1
     except Exception as e:  # pragma: no cover - defensive JSON contract fallback

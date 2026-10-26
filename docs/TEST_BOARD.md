@@ -204,8 +204,8 @@ Find work item ids in **Boards** → **Backlogs**, or with the `ado-desk-seed` t
 ### Setup and settings
 
 - [ ] **Settings → Engine → Verify Engine** succeeds.
-- [ ] A wrong token shows `AUTH_ERROR`. A misspelled project shows `STORY_NOT_FOUND` (the engine maps every 404 to
-      it).
+- [ ] A wrong token shows `AUTH_ERROR`. A misspelled project shows `STORY_NOT_FOUND` when opening a work item, and
+      a misspelled team shows `NOT_FOUND` or `ITERATION_NOT_FOUND` on the sprint sections.
 - [ ] An empty Team field with no `ADO_TEAM` makes the Current Sprint section report `CONFIG_ERROR`.
 
 ### Current Sprint
@@ -246,12 +246,18 @@ Find work item ids in **Boards** → **Backlogs**, or with the `ado-desk-seed` t
 
 ### Reports
 
-- [ ] **Export closed stories** from 2026-08-01 for your email: **22 items**, the 19 Closed and 3 Resolved stories
+- [ ] Work item IDs everywhere show as `#123456`, without a thousands separator.
+- [ ] **Closed Stories** from 2026-08-01 for your email, with only **User Story** switched on: **22 items** in the
+      table, the 19 Closed and 3 Resolved stories
       assigned to you, newest first. Every completion date is the day you ran the seed script, so ranges that end
       before that day export nothing. An engine from before jsonify/ado-desk#17 exports only the 19 Closed stories,
       because it filtered on Closed Date, which Resolved items don't have.
-- [ ] **Export modifications** for your email, from the seed day: several rows per item, one for each revision.
-- [ ] **Reveal in Finder** opens the exported file.
+      Switching on **Task** as well adds the closed tasks. Clicking an ID opens the item in the browser, and
+      **Save JSON…** writes the rows to a file that then appears under Recent Exports.
+- [ ] **Modifications** for your email, from the seed day: several rows per item, one for each revision. Switching a
+      type off hides its rows at once, and **Save JSON…** saves only the rows shown. Clicking an ID opens the item.
+- [ ] **Weekly Report** with **Task** switched off has no tasks in any section.
+- [ ] **Reveal in Finder** under Recent Exports opens the saved file.
 
 ### Activity drawer
 
