@@ -1082,6 +1082,28 @@ def _normalize_identity_name(value: Any) -> str | None:
     return None
 
 
+def _identity_matches(expected: str, value: Any) -> bool:
+    """Match a person's name or email against an ADO identity field.
+
+    Checks the identity's displayName and uniqueName (usually the email), so
+    ADO_ASSIGNEE can hold either. A string identity ("Jane Doe <jane@example.com>")
+    is checked whole and by the email inside the angle brackets. An email must match
+    exactly (ignoring case); a name is compared with _assignee_matches.
+    """
+    if isinstance(value, dict):
+        candidates = [value.get("displayName"), value.get("uniqueName")]
+    elif isinstance(value, str):
+        email = re.search(r"<([^<>]+)>", value)
+        candidates = [value, email.group(1) if email else None]
+    else:
+        return False
+    candidates = [candidate for candidate in candidates if candidate]
+    if "@" in expected:
+        wanted = expected.strip().casefold()
+        return any(candidate.strip().casefold() == wanted for candidate in candidates)
+    return any(_assignee_matches(expected, candidate) for candidate in candidates)
+
+
 def cmd_iteration_closed_stories(args: argparse.Namespace, client: AdoClient) -> dict[str, Any]:
     """Summarize User Stories in one iteration with a given state (command: iteration-closed-stories).
 
@@ -1218,7 +1240,7 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
     [--from-date, --to-date], with the end date inclusive: ClosedDate for Closed
     items, ResolvedDate for items in the other states (ADO only sets ClosedDate on
     Closed). Fields are batch-fetched,
-    then filtered on the client with _assignee_matches, because the query does not
+    then filtered on the client with _identity_matches, because the query does not
     filter by assignee. Rich-text fields are flattened to plain text, and the
     completion date is written as M/D/YYYY. Items are sorted newest first.
 
@@ -1288,7 +1310,7 @@ def cmd_export_closed_stories(args: argparse.Namespace, client: AdoClient) -> di
     for item in raw_items:
         fields = item.get("fields", {})
         assigned_to = _normalize_identity_name(fields.get("System.AssignedTo"))
-        if not _assignee_matches(assignee, assigned_to):
+        if not _identity_matches(assignee, fields.get("System.AssignedTo")):
             continue
 
         # Closed items carry ClosedDate; Resolved (and other non-Closed) items only ResolvedDate.
@@ -1360,7 +1382,7 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
     --from-date, following continuationToken until isLastBatch. It stops early at
     the first revision dated on or after the day after --to-date, which assumes
     revisions arrive in date order. Revisions are matched to --user on
-    System.ChangedBy with _assignee_matches. Every revision in the project in the
+    System.ChangedBy with _identity_matches. Every revision in the project in the
     range is downloaded, so wide ranges can be slow.
 
     Nothing is written to disk. The items are returned in the envelope.
@@ -1439,7 +1461,7 @@ def cmd_export_modifications(args: argparse.Namespace, client: AdoClient) -> dic
                 continue
 
             changed_by = _normalize_identity_name(fields.get("System.ChangedBy"))
-            if not _assignee_matches(user, changed_by):
+            if not _identity_matches(user, fields.get("System.ChangedBy")):
                 continue
 
             item_id = fields.get("System.Id", revision.get("id", ""))
@@ -1654,7 +1676,7 @@ def cmd_weekly_report(args: argparse.Namespace, client: AdoClient) -> dict[str, 
 
     Dates are compared as local calendar days. Without --assigned-to or
     ADO_ASSIGNEE, items are those assigned to the PAT's owner (@Me); with a name,
-    the assignee is matched loosely on the client (see _assignee_matches).
+    the assignee is matched loosely on the client (see _identity_matches).
 
     The report is returned as Markdown and HTML, and the Markdown is also written
     to --output when given.
@@ -1728,7 +1750,7 @@ def cmd_weekly_report(args: argparse.Namespace, client: AdoClient) -> dict[str, 
         open_items: list[tuple[str, dict[str, Any]]] = []
         for raw in raw_items:
             fields = raw.get("fields", {})
-            if assignee and not _assignee_matches(assignee, _normalize_identity_name(fields.get("System.AssignedTo"))):
+            if assignee and not _identity_matches(assignee, fields.get("System.AssignedTo")):
                 continue
             state = _sanitize_rich_text(fields.get("System.State"))
             state_key = state.casefold()
