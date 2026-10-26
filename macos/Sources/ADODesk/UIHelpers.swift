@@ -115,9 +115,42 @@ enum Desktop {
         return panel.runModal() == .OK ? panel.url?.path : nil
     }
 
-    static func chooseSaveLocation(defaultName: String) -> URL? {
+    /// Puts HTML on the pasteboard with RTF and plain-text fallbacks, so mail apps paste it formatted.
+    @MainActor
+    static func copyRich(html: String, plain: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(html, forType: .html)
+        if let attributed = attributedString(fromHTML: html),
+           let rtf = attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:]) {
+            pasteboard.setData(rtf, forType: .rtf)
+        }
+        pasteboard.setString(plain, forType: .string)
+    }
+
+    /// Opens a new message in the default mail app with the HTML as its body. Returns false if none can compose.
+    @MainActor @discardableResult
+    static func composeEmail(subject: String, html: String) -> Bool {
+        guard let service = NSSharingService(named: .composeEmail),
+              let body = attributedString(fromHTML: html),
+              service.canPerform(withItems: [body])
+        else { return false }
+        service.subject = subject
+        service.perform(withItems: [body])
+        return true
+    }
+
+    private static func attributedString(fromHTML html: String) -> NSAttributedString? {
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue,
+        ]
+        return try? NSAttributedString(data: Data(html.utf8), options: options, documentAttributes: nil)
+    }
+
+    static func chooseSaveLocation(defaultName: String, types: [UTType] = [.json]) -> URL? {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
+        panel.allowedContentTypes = types
         panel.nameFieldStringValue = defaultName
         panel.canCreateDirectories = true
         return panel.runModal() == .OK ? panel.url : nil

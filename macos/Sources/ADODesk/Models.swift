@@ -245,3 +245,37 @@ struct Modification: Codable, Identifiable, Hashable {
         case revision, changedDate, changedBy, title, state, workItemType, url
     }
 }
+
+struct WeeklyReportResult: Decodable {
+    struct Section: Decodable, Identifiable {
+        let areaPath: String
+        let name: String
+        let completed: [WeeklyReportItem]
+        let progressed: [WeeklyReportItem]
+        let blocked: [WeeklyReportItem]
+        let upcoming: [WeeklyReportItem]
+
+        var id: String { areaPath }
+    }
+
+    let fromDate: String
+    let toDate: String
+    let rangeLabel: String
+    let assignee: String
+    let areaPaths: [String]
+    let sections: [Section]
+    let markdown: String
+    let html: String
+}
+
+struct WeeklyReportItem: Decodable, Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let workItemType: String
+    let state: String
+    let fromState: String?
+    let date: String?
+    let priority: Int?
+    let iteration: String?
+    let url: String
+}
