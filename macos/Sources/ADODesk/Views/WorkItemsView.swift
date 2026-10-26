@@ -107,7 +107,7 @@ private struct RecentItemRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title.isEmpty ? "Untitled" : item.title).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text("#\(item.id)").monospacedDigit()
+                    Text(Format.id(item.id)).monospacedDigit()
                     if !item.state.isEmpty {
                         StateBadge(state: item.state)
                     }
@@ -235,7 +235,7 @@ struct WorkItemEditor: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 WorkItemTypeIcon(type: item.field("System.WorkItemType"))
-                Text("\(item.field("System.WorkItemType")) #\(item.id)")
+                Text("\(item.field("System.WorkItemType")) \(Format.id(item.id))")
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 Spacer()
