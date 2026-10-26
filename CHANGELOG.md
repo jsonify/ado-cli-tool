@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/jsonify/ado-desk/compare/v0.3.2...v0.4.0) (2026-10-26)
+
+
+### Features
+
+* add a weekly report across area paths ([004f7b6](https://github.com/jsonify/ado-desk/commit/004f7b6e6dd2a70baa1dd50de0979a08260d486d))
+* add a weekly report across area paths ([b585784](https://github.com/jsonify/ado-desk/commit/b585784e59892a27868afd64b3619e1d052bb184))
+
 ## [0.3.2](https://github.com/jsonify/ado-desk/compare/v0.3.1...v0.3.2) (2026-10-25)
 
 
