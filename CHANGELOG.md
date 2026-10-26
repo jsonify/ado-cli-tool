@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/jsonify/ado-desk/compare/v0.4.0...v0.4.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* match report assignees by email as well as display name ([a7bb988](https://github.com/jsonify/ado-desk/commit/a7bb988d6a27c9d59fdec2bed8102bf0f4f42ace))
+
 ## [0.4.0](https://github.com/jsonify/ado-desk/compare/v0.3.2...v0.4.0) (2026-10-26)
 
 
